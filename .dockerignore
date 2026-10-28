@@ -1,0 +1,4 @@
+*
+!vero-armhf-sysroot.tar.gz
+!docker/
+!toolchain/vero-armhf.cmake

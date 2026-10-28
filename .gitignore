@@ -1,0 +1,18 @@
+# Upstream SpaghettiKart checkout (its own repository; local work lives on its vero4k branches)
+/source/
+
+# Build tree and build results
+/build/
+/output/
+
+# Vero sysroot: copied from the device, large
+/sysroot/
+/vero-armhf-sysroot.tar.gz
+
+# Game assets: large and not redistributable
+*.o2r
+*.otr
+*.z64
+*.n64
+*.v64
+/MarioKart64.zip

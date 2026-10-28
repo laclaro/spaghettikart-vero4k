@@ -1,0 +1,144 @@
+From 6dbdbae047552a35e31fc26c10e2c7028c83dd2e Mon Sep 17 00:00:00 2001
+From: Henning Hollermann <laclaro@mail.com>
+Date: Wed, 28 Oct 2026 22:44:52 +0100
+Subject: [PATCH 4/4] GLES 2.0: MSAA through
+ GL_EXT_multisampled_render_to_texture
+
+GLES 2.0 has no multisampled renderbuffers, so MSAA was disabled there.
+Tile-based GPUs (Mali, Adreno, PowerVR) offer
+GL_EXT_multisampled_render_to_texture instead: rendering into a plain
+texture with the samples kept in tile memory and resolved implicitly,
+at little cost.
+
+When the extension and its entry points are present, the maximum sample
+count comes from GL_MAX_SAMPLES_EXT and multisampled framebuffers attach
+their colour texture with glFramebufferTexture2DMultisampleEXT and get a
+matching glRenderbufferStorageMultisampleEXT depth/stencil buffer. The
+existing GLES 2.0 resolve path (a textured-quad copy) then copies the
+already resolved texture. Without the extension MSAA stays off.
+
+The renderer, extension support and sample limit are logged at startup
+(as a warning, since only warnings are logged that early), and the
+framebuffer diagnostics now include size and sample count changes.
+
+Tested on a Vero 4K+ (Mali-450 MP, up to 4x): gMSAAValue 4 with
+gInternalResolution 0.75 costs about 1-2 fps.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/fast/backends/gfx_opengl.h |  4 +++
+ src/fast/backends/gfx_opengl.cpp   | 45 ++++++++++++++++++++++++------
+ 2 files changed, 41 insertions(+), 8 deletions(-)
+
+diff --git a/include/fast/backends/gfx_opengl.h b/include/fast/backends/gfx_opengl.h
+index 87c29427..8e1569bd 100644
+--- a/include/fast/backends/gfx_opengl.h
++++ b/include/fast/backends/gfx_opengl.h
+@@ -151,6 +151,10 @@ class GfxRenderingAPIOGL final : public GfxRenderingAPI {
+     GLuint mBlitProgram = 0;
+     GLuint mBlitVbo = 0;
+     GLuint mBlitScratchTex = 0;
++    // GL_EXT_multisampled_render_to_texture (Mali, Adreno, PowerVR): multisampled rendering into a plain texture,
++    // resolved implicitly by the tiler. Null when the extension is missing; MSAA then stays off.
++    PFNGLFRAMEBUFFERTEXTURE2DMULTISAMPLEEXTPROC mFramebufferTexture2DMultisample = nullptr;
++    PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC mRenderbufferStorageMultisample = nullptr;
+ #endif
+ };
+ 
+diff --git a/src/fast/backends/gfx_opengl.cpp b/src/fast/backends/gfx_opengl.cpp
+index 642b412e..1138e0b3 100644
+--- a/src/fast/backends/gfx_opengl.cpp
++++ b/src/fast/backends/gfx_opengl.cpp
+@@ -5,6 +5,7 @@
+ #include <stdbool.h>
+ #include <stdio.h>
+ 
++#include <cstring>
+ #include <map>
+ #include <unordered_map>
+ 
+@@ -785,8 +786,25 @@ void GfxRenderingAPIOGL::Init() {
+     mFrameBuffers.resize(1); // for the default screen buffer
+ 
+ #ifdef USE_OPENGLES2
+-    // No multisampled renderbuffers and no depth readback on GLES 2.0.
++    // No depth readback on GLES 2.0, and multisampling only through GL_EXT_multisampled_render_to_texture, which
++    // tile-based GPUs implement at little cost (the samples stay in tile memory).
+     mMaxMsaaLevel = 1;
++    const char* extensions = (const char*)glGetString(GL_EXTENSIONS);
++    const bool hasMsaaExtension =
++        extensions != nullptr && strstr(extensions, "GL_EXT_multisampled_render_to_texture") != nullptr;
++    if (hasMsaaExtension) {
++        mFramebufferTexture2DMultisample = (PFNGLFRAMEBUFFERTEXTURE2DMULTISAMPLEEXTPROC)SDL_GL_GetProcAddress(
++            "glFramebufferTexture2DMultisampleEXT");
++        mRenderbufferStorageMultisample = (PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC)SDL_GL_GetProcAddress(
++            "glRenderbufferStorageMultisampleEXT");
++        if (mFramebufferTexture2DMultisample != nullptr && mRenderbufferStorageMultisample != nullptr) {
++            glGetIntegerv(GL_MAX_SAMPLES_EXT, &mMaxMsaaLevel);
++        }
++    }
++    SPDLOG_WARN("GLES 2.0 renderer {}: multisampled render-to-texture {}, entry points {}/{}, up to {}x",
++                (const char*)glGetString(GL_RENDERER), hasMsaaExtension ? "available" : "missing",
++                mFramebufferTexture2DMultisample != nullptr, mRenderbufferStorageMultisample != nullptr,
++                mMaxMsaaLevel);
+ #else
+     glGenRenderbuffers(1, &mPixelDepthRb);
+     glBindRenderbuffer(GL_RENDERBUFFER, mPixelDepthRb);
+@@ -881,7 +899,14 @@ void GfxRenderingAPIOGL::UpdateFramebufferParameters(int fb_id, uint32_t width,
+                 glBindTexture(GL_TEXTURE_2D, 0);
+                 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.clrbuf, 0);
+             } else {
+-#ifndef USE_OPENGLES2 // msaa_level is clamped to 1 on GLES 2.0
++#ifdef USE_OPENGLES2
++                // Render to the colour texture multisampled; it holds the resolved image once rendering ends.
++                glBindTexture(GL_TEXTURE_2D, fb.clrbuf);
++                glTexImage2D(GL_TEXTURE_2D, 0, kTexFormatRGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
++                glBindTexture(GL_TEXTURE_2D, 0);
++                mFramebufferTexture2DMultisample(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.clrbuf, 0,
++                                                 msaa_level);
++#else
+                 glBindRenderbuffer(GL_RENDERBUFFER, fb.clrbufMsaa);
+                 glRenderbufferStorageMultisample(GL_RENDERBUFFER, msaa_level, GL_RGB8, width, height);
+                 glBindRenderbuffer(GL_RENDERBUFFER, 0);
+@@ -896,7 +921,9 @@ void GfxRenderingAPIOGL::UpdateFramebufferParameters(int fb_id, uint32_t width,
+             if (msaa_level <= 1) {
+                 glRenderbufferStorage(GL_RENDERBUFFER, kDepthStencilFormat, width, height);
+             } else {
+-#ifndef USE_OPENGLES2
++#ifdef USE_OPENGLES2
++                mRenderbufferStorageMultisample(GL_RENDERBUFFER, msaa_level, kDepthStencilFormat, width, height);
++#else
+                 glRenderbufferStorageMultisample(GL_RENDERBUFFER, msaa_level, GL_DEPTH24_STENCIL8, width, height);
+ #endif
+             }
+@@ -911,12 +938,14 @@ void GfxRenderingAPIOGL::UpdateFramebufferParameters(int fb_id, uint32_t width,
+ 
+ #ifdef USE_OPENGLES2
+         const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+-        if (status != fb.status || status == 0) {
++        if (status != fb.status || status == 0 || fb.width != width || fb.height != height ||
++            fb.msaa_level != msaa_level) {
+             if (status == GL_FRAMEBUFFER_COMPLETE) {
+-                SPDLOG_INFO("Framebuffer {} complete: {}x{}, depth {}", fb_id, width, height, has_depth_buffer);
++                SPDLOG_INFO("Framebuffer {} complete: {}x{}, depth {}, {}x MSAA", fb_id, width, height,
++                            has_depth_buffer, msaa_level);
+             } else {
+-                SPDLOG_ERROR("Framebuffer {} incomplete (0x{:04x}): {}x{}, depth {}", fb_id, status, width, height,
+-                             has_depth_buffer);
++                SPDLOG_ERROR("Framebuffer {} incomplete (0x{:04x}): {}x{}, depth {}, {}x MSAA", fb_id, status,
++                             width, height, has_depth_buffer, msaa_level);
+             }
+             fb.status = status;
+         }
+@@ -1128,7 +1157,7 @@ void GfxRenderingAPIOGL::ResolveMSAAColorBuffer(int fb_id_target, int fb_id_sour
+     FramebufferOGL& fb_dst = mFrameBuffers[fb_id_target];
+     FramebufferOGL& fb_src = mFrameBuffers[fb_id_source];
+ #ifdef USE_OPENGLES2
+-    // Nothing is multisampled on GLES 2.0, so the "resolve" is a plain copy.
++    // Multisampled framebuffers render into a texture that is resolved implicitly, so this is a plain copy.
+     if (mLastScissorEnabled != 0) {
+         mLastScissorEnabled = 0;
+         glDisable(GL_SCISSOR_TEST);
+-- 
+2.53.0
+

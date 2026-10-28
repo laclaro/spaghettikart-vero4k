@@ -1,0 +1,35 @@
+From 64004f0802e089eb2f13c23ccc34973ab818a512 Mon Sep 17 00:00:00 2001
+From: Henning Hollermann <laclaro@mail.com>
+Date: Thu, 22 Oct 2026 00:34:02 +0200
+Subject: [PATCH 2/3] Answer Yes when SDL cannot show a message box
+
+SDL video drivers without message box support (e.g. mali/fbdev on the
+Vero 4K+) make SDL_ShowMessageBox fail, after which ShowYesNoBox
+returned an uninitialized value and the "generate O2R?" prompt quit the
+game. Log a warning and take the default answer instead.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/port/Engine.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/port/Engine.cpp b/src/port/Engine.cpp
+index 23036adcb..f93bda197 100644
+--- a/src/port/Engine.cpp
++++ b/src/port/Engine.cpp
+@@ -345,7 +345,11 @@ int GameEngine::ShowYesNoBox(const char* title, const char* box) {
+     boxData.message = box;
+     boxData.title = title;
+     boxData.buttons = buttons;
+-    SDL_ShowMessageBox(&boxData, &ret);
++    if (SDL_ShowMessageBox(&boxData, &ret) < 0) {
++        // Video drivers without message boxes (e.g. SDL's mali/fbdev) cannot ask; take the default answer.
++        SPDLOG_WARN("Cannot show message box ({}), answering Yes: {}", SDL_GetError(), box);
++        ret = IDYES;
++    }
+ #endif
+     return ret;
+ }
+-- 
+2.53.0
+

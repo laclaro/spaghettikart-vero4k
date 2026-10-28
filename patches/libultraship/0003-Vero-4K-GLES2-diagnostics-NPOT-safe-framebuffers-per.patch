@@ -1,0 +1,185 @@
+From cefd55d0cd5ba541f32c5617796597da05279963 Mon Sep 17 00:00:00 2001
+From: Henning Hollermann <laclaro@mail.com>
+Date: Wed, 28 Oct 2026 22:27:43 +0100
+Subject: [PATCH 3/4] Vero 4K+: GLES2 diagnostics, NPOT-safe framebuffers,
+ per-port gamepads
+
+Follow-up to the OpenGL ES 2.0 renderer (USE_OPENGLES2), from testing on
+a Vero 4K+ (Amlogic S905D, Mali-450, OSMC, 32-bit userspace):
+
+- Framebuffer colour textures use GL_CLAMP_TO_EDGE on GLES 2.0. Their
+  sizes (e.g. 960x540 with gInternalResolution 0.5) are rarely powers of
+  two, and GLES 2.0 only guarantees NPOT sampling with clamped wrapping.
+- GLES 2.0 drivers fail silently (black output), so log what is needed to
+  diagnose that: each framebuffer's glCheckFramebufferStatus result when
+  it changes, the first 20 GL errors, and every change of render target
+  and size in Interpreter::StartFrame (screen or framebuffer, viewport,
+  window). The last one is cheap enough for all backends.
+- New CVar gControllers.AutoAssignPorts (default off): the n-th SDL
+  gamepad drives port n and ports 2-4 get default gamepad mappings when
+  they have none. Without it every gamepad drives port 1 and other ports
+  can only be assigned in the input editor, which needs a keyboard -
+  not available on a TV box.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/fast/backends/gfx_opengl.h            |  1 +
+ src/fast/backends/gfx_opengl.cpp              | 25 +++++++++++++++++++
+ src/fast/interpreter.cpp                      | 14 +++++++++++
+ .../controller/controldeck/ControlDeck.cpp    |  9 +++++++
+ .../ConnectedPhysicalDeviceManager.cpp        | 18 +++++++++++--
+ 5 files changed, 65 insertions(+), 2 deletions(-)
+
+diff --git a/include/fast/backends/gfx_opengl.h b/include/fast/backends/gfx_opengl.h
+index 003903ee..87c29427 100644
+--- a/include/fast/backends/gfx_opengl.h
++++ b/include/fast/backends/gfx_opengl.h
+@@ -52,6 +52,7 @@ struct FramebufferOGL {
+     bool invertY;
+ 
+     GLuint fbo, clrbuf, clrbufMsaa, rbo;
++    GLenum status; // last glCheckFramebufferStatus result (GLES 2.0 diagnostics)
+ };
+ 
+ struct TextureInfo {
+diff --git a/src/fast/backends/gfx_opengl.cpp b/src/fast/backends/gfx_opengl.cpp
+index c14c8f1c..642b412e 100644
+--- a/src/fast/backends/gfx_opengl.cpp
++++ b/src/fast/backends/gfx_opengl.cpp
+@@ -813,6 +813,13 @@ void GfxRenderingAPIOGL::StartFrame() {
+ 
+ void GfxRenderingAPIOGL::EndFrame() {
+     glFlush();
++#ifdef USE_OPENGLES2
++    // GLES 2.0 drivers fail quietly (black output); log the first errors so it can be diagnosed.
++    static int sErrorsLogged = 0;
++    for (GLenum err; sErrorsLogged < 20 && (err = glGetError()) != GL_NO_ERROR; sErrorsLogged++) {
++        SPDLOG_ERROR("GL error 0x{:04x} in frame {}", err, mFrameCount);
++    }
++#endif
+ }
+ 
+ void GfxRenderingAPIOGL::FinishRender() {
+@@ -825,6 +832,11 @@ int GfxRenderingAPIOGL::CreateFramebuffer() {
+     glTexImage2D(GL_TEXTURE_2D, 0, kTexFormatRGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++#ifdef USE_OPENGLES2
++    // Framebuffer sizes are rarely powers of two; GLES 2.0 only guarantees NPOT sampling with clamped wrapping.
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++#endif
+     glBindTexture(GL_TEXTURE_2D, 0);
+ 
+     GLuint clrbufMsaa;
+@@ -896,6 +908,19 @@ void GfxRenderingAPIOGL::UpdateFramebufferParameters(int fb_id, uint32_t width,
+         } else if (fb.has_depth_buffer && !has_depth_buffer) {
+             AttachDepthStencil(0);
+         }
++
++#ifdef USE_OPENGLES2
++        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++        if (status != fb.status || status == 0) {
++            if (status == GL_FRAMEBUFFER_COMPLETE) {
++                SPDLOG_INFO("Framebuffer {} complete: {}x{}, depth {}", fb_id, width, height, has_depth_buffer);
++            } else {
++                SPDLOG_ERROR("Framebuffer {} incomplete (0x{:04x}): {}x{}, depth {}", fb_id, status, width, height,
++                             has_depth_buffer);
++            }
++            fb.status = status;
++        }
++#endif
+     }
+ 
+     fb.width = width;
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 04dff040..6508e8e3 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -5050,6 +5050,20 @@ void Interpreter::StartFrame() {
+         mRendersToFb = false;
+     }
+ 
++    // Log each change of render target so a black screen can be traced to the path taken.
++    static bool sLoggedRendersToFb;
++    static uint32_t sLoggedWidth, sLoggedHeight;
++    if (sLoggedWidth != mCurDimensions.width || sLoggedHeight != mCurDimensions.height ||
++        sLoggedRendersToFb != mRendersToFb) {
++        SPDLOG_INFO("Game renders {}x{} to {} (viewport {}x{} at {},{}, window {}x{})", mCurDimensions.width,
++                    mCurDimensions.height, mRendersToFb ? "framebuffer" : "screen", mGameWindowViewport.width,
++                    mGameWindowViewport.height, mGameWindowViewport.x, mGameWindowViewport.y,
++                    mGfxCurrentWindowDimensions.width, mGfxCurrentWindowDimensions.height);
++        sLoggedWidth = mCurDimensions.width;
++        sLoggedHeight = mCurDimensions.height;
++        sLoggedRendersToFb = mRendersToFb;
++    }
++
+     mFbActive = false;
+ }
+ 
+diff --git a/src/ship/controller/controldeck/ControlDeck.cpp b/src/ship/controller/controldeck/ControlDeck.cpp
+index 977721f7..e06352b9 100644
+--- a/src/ship/controller/controldeck/ControlDeck.cpp
++++ b/src/ship/controller/controldeck/ControlDeck.cpp
+@@ -38,6 +38,15 @@ void ControlDeck::Init(uint8_t* controllerBits) {
+         mPorts[0]->GetConnectedController()->AddDefaultMappings(PhysicalDeviceType::Mouse);
+         mPorts[0]->GetConnectedController()->AddDefaultMappings(PhysicalDeviceType::SDLGamepad);
+     }
++
++    // Ports 2-4 start without mappings; give them gamepad defaults when gamepads are assigned to ports automatically.
++    if (Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_PREFIX_CONTROLLERS ".AutoAssignPorts", 0)) {
++        for (size_t i = 1; i < mPorts.size(); i++) {
++            if (!mPorts[i]->GetConnectedController()->HasConfig()) {
++                mPorts[i]->GetConnectedController()->AddDefaultMappings(PhysicalDeviceType::SDLGamepad);
++            }
++        }
++    }
+ }
+ 
+ bool ControlDeck::ProcessKeyboardEvent(KbEventType eventType, KbScancode scancode) {
+diff --git a/src/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.cpp b/src/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.cpp
+index 7f0397e2..3105a5fa 100644
+--- a/src/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.cpp
++++ b/src/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.cpp
+@@ -1,5 +1,7 @@
+ #include "ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h"
+ #include <spdlog/spdlog.h>
++#include "ship/Context.h"
++#include "ship/config/ConsoleVariable.h"
+ 
+ namespace Ship {
+ ConnectedPhysicalDeviceManager::ConnectedPhysicalDeviceManager() {
+@@ -53,6 +55,11 @@ void ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads() {
+     mConnectedSDLGamepads.clear();
+     mConnectedSDLGamepadNames.clear();
+     static SDL_JoystickGUID sZeroGuid;
++    // With AutoAssignPorts set, the n-th gamepad drives port n (couch multiplayer without a keyboard to assign
++    // devices in the input editor); otherwise every gamepad drives port 1.
++    const bool autoAssignPorts = Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
++                                     CVAR_PREFIX_CONTROLLERS ".AutoAssignPorts", 0) != 0;
++    uint8_t gamepadCount = 0;
+ 
+     for (int32_t i = 0; i < SDL_NumJoysticks(); i++) {
+ 
+@@ -100,9 +107,16 @@ void ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads() {
+         mConnectedSDLGamepads[instanceId] = gamepad;
+         mConnectedSDLGamepadNames[instanceId] = gamepadName;
+ 
+-        for (uint8_t port = 1; port < 4; port++) {
+-            mIgnoredInstanceIds[port].insert(instanceId);
++        const uint8_t assignedPort = autoAssignPorts && gamepadCount < 4 ? gamepadCount : 0;
++        gamepadCount++;
++        for (uint8_t port = 0; port < 4; port++) {
++            if (port == assignedPort) {
++                mIgnoredInstanceIds[port].erase(instanceId);
++            } else {
++                mIgnoredInstanceIds[port].insert(instanceId);
++            }
+         }
++        SPDLOG_INFO("Gamepad \"{}\" (instance {}) drives port {}", gamepadName, instanceId, assignedPort + 1);
+     }
+ }
+ } // namespace Ship
+-- 
+2.53.0
+

@@ -1,0 +1,231 @@
+From cf2b5cfb84cf4cd6be519a9afc070b8776dc7293 Mon Sep 17 00:00:00 2001
+From: Henning Hollermann <laclaro@mail.com>
+Date: Wed, 28 Oct 2026 22:27:56 +0100
+Subject: [PATCH 3/3] Vero 4K+: keep audio playing below 30 fps, tuning hooks
+
+Audio on slow devices, found on a Vero 4K+ (Mali-450, races at 15-24 fps
+at 1080p with gInternalResolution 0.75):
+
+- Audio is generated once per game frame, so below 30 fps the queue ran
+  dry and the sound stuttered. The audio thread now generates up to six
+  updates per frame until the queue holds the slowest recent frame
+  (decaying over ~2 s) times 1.25 plus one device buffer, because SDL
+  takes whole device buffers and pads a short one with silence. Music
+  and effects then play in real time while the game runs slow; at a
+  steady 30 fps nothing changes.
+- SPAGHETTIKART_AUDIO_SAMPLES sets the SDL device buffer (default 512 =
+  19 ms, which underruns on the Vero; it uses 1024).
+- SPAGHETTIKART_FRAME_STATS=1 logs fps, frame time split and the lowest
+  queued audio every 5 s.
+- libultraship: GLES2 framebuffer/GL error diagnostics, NPOT-safe
+  framebuffer textures, gControllers.AutoAssignPorts for one gamepad per
+  player.
+
+Summary of the Vero 4K+ port on this branch (OSMC/Debian bullseye armhf,
+Mali-450 with OpenGL ES 2.0 only, SDL 2.0.20 mali-fbdev):
+
+- OpenGL ES 2.0 renderer (USE_OPENGLES2) in libultraship and GLSL ES 1.00
+  versions of the shaders; no MSAA, VAOs or depth readback.
+- Yes/No prompts answer Yes when SDL has no message box support
+  (mali/fbdev), instead of exiting with an uninitialised answer.
+- Cross-compiled in a Docker image built from the Vero's own sysroot
+  (gcc 10.2 / glibc 2.31 to match bullseye), with RUNPATH /opt/vero3/lib
+  for the Mali blob; the build scripts and patches live outside this
+  repository (spaghettikart-cross).
+- Kodi launcher (outside this repository): stops Kodi in a transient
+  systemd unit and restarts it on exit, pins HDMI to 1080p60 (other modes
+  stayed black), plays to hdmi:CARD=AMLMESONAUDIO exclusively through a
+  plug converting to 48 kHz (TVs stay silent at the game's 26800 Hz),
+  adds the input group for controller access, and ships an up-to-date
+  gamecontrollerdb.txt (SDL 2.0.20 predates e.g. the 8BitDo Ultimate 2C).
+- Recommended settings: gInternalResolution 0.75, gTextureFilter 1
+  (linear; the 3-point filter is costly on the Mali-450).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/port/Engine.cpp | 68 ++++++++++++++++++++++++++++++++++-----------
+ src/port/Game.cpp   | 49 ++++++++++++++++++++++++++++++++
+ 2 files changed, 101 insertions(+), 16 deletions(-)
+
+diff --git a/src/port/Engine.cpp b/src/port/Engine.cpp
+index f93bda197..5c38165e3 100644
+--- a/src/port/Engine.cpp
++++ b/src/port/Engine.cpp
+@@ -1,6 +1,9 @@
+ #include "Engine.h"
+ 
+ #include <cstdlib>
++#include <algorithm>
++#include <atomic>
++#include <chrono>
+ #include "ship/utils/StringHelper.h"
+ #include "GameExtractor.h"
+ #include "engine/mods/ModManager.h"
+@@ -181,7 +184,13 @@ GameEngine::GameEngine() {
+     gui->AddGuiWindow(std::make_shared<LUS::InputEditorWindow>(CVAR_CONTROLLER_CONFIGURATION_WINDOW_OPEN, "Input Editor"));
+     gui->AddGuiWindow(std::make_shared<LUS::GfxDebuggerWindow>(CVAR_GFX_DEBUGGER_WINDOW_OPEN, "GfxDebuggerWindow", ImVec2(520, 600)));
+ 
+-    this->context->Init({assets_path}, {}, 3, { 26800, 512, 1100 }, wnd, controlDeck);
++    // SPAGHETTIKART_AUDIO_SAMPLES sets the audio device buffer; slow devices (e.g. the Vero 4K+) need a larger one
++    // than the default 512 samples (19 ms) to avoid underruns.
++    int audioSamples = 512;
++    if (const char* samples = std::getenv("SPAGHETTIKART_AUDIO_SAMPLES")) {
++        audioSamples = std::clamp(std::atoi(samples), 256, 8192);
++    }
++    this->context->Init({assets_path}, {}, 3, { 26800, audioSamples, 1100 }, wnd, controlDeck);
+ 
+ #ifndef __SWITCH__
+     Ship::Context::GetRawInstance()->GetLogger()->set_level(
+@@ -483,6 +492,13 @@ void GameEngine::ProcessGfxCommands(Gfx* pool) {
+ }
+ 
+ // Audio
++// Queued audio when the audio thread starts a frame's update (the low point), for the frame pacing log.
++std::atomic<int> sAudioBufferedBeforeUpdate;
++
++extern "C" int GameEngine_GetAudioBufferedBeforeUpdate() {
++    return sAudioBufferedBeforeUpdate;
++}
++
+ void GameEngine::HandleAudioThread() {
+     while (audio.running) {
+         {
+@@ -497,27 +513,47 @@ void GameEngine::HandleAudioThread() {
+         }
+         std::unique_lock<std::mutex> Lock(audio.mutex);
+ 
+-        int samples_left = AudioPlayerBuffered();
+-        u32 num_audio_samples = samples_left < AudioPlayerGetDesiredBuffered() ? SAMPLES_HIGH : SAMPLES_LOW;
+-
+-        s16 nas_buffer[SAMPLES_PER_FRAME] = { 0 };
+-        f32 hmas_buffer[SAMPLES_PER_FRAME] = { 0 };
+-        s16 mix_buffer[SAMPLES_PER_FRAME] = { 0 };
++        // Audio is generated once per game frame, so below 30 fps (slow GPUs such as the Mali-450) the buffer runs
++        // dry and the sound stutters. Generate extra updates until enough is queued to outlast the next frame,
++        // judged by the slowest recent frame (decaying over ~2 s), plus one device buffer: SDL takes whole device
++        // buffers from the queue and pads a short one with silence. The sound then plays on in real time while the
++        // game runs slow. The target stays below the 6000 samples at which the SDL player drops audio.
++        using Clock = std::chrono::steady_clock;
++        static Clock::time_point sLastUpdate = Clock::now();
++        static double sSlowFrameMs = 0;
++        const Clock::time_point now = Clock::now();
++        const double frameMs = std::chrono::duration<double, std::milli>(now - sLastUpdate).count();
++        sLastUpdate = now;
++        sSlowFrameMs = std::max(std::min(frameMs, 250.0), sSlowFrameMs * 0.97);
++        const auto player = Ship::Context::GetRawInstance()->GetAudio()->GetAudioPlayer();
++        const int deviceSamples = player != nullptr ? player->GetSampleLength() : 512;
++        const int target =
++            std::clamp((int)(1.25 * sSlowFrameMs * GameEngine_GetSampleRate() / 1000) + deviceSamples,
++                       AudioPlayerGetDesiredBuffered(), 5000);
++        sAudioBufferedBeforeUpdate = AudioPlayerBuffered();
++        for (int update = 0; update < 6 && (update == 0 || AudioPlayerBuffered() < target); update++) {
++            int samples_left = AudioPlayerBuffered();
++            u32 num_audio_samples = samples_left < AudioPlayerGetDesiredBuffered() ? SAMPLES_HIGH : SAMPLES_LOW;
++
++            s16 nas_buffer[SAMPLES_PER_FRAME] = { 0 };
++            f32 hmas_buffer[SAMPLES_PER_FRAME] = { 0 };
++            s16 mix_buffer[SAMPLES_PER_FRAME] = { 0 };
++
++            for (size_t i = 0; i < NUM_AUDIO_CHANNELS; i++) {
++                create_next_audio_buffer(nas_buffer + i * (num_audio_samples * 2), num_audio_samples);
++            }
+ 
+-        for (size_t i = 0; i < NUM_AUDIO_CHANNELS; i++) {
+-            create_next_audio_buffer(nas_buffer + i * (num_audio_samples * 2), num_audio_samples);
+-        }
++            GameEngine::Instance->gHMAS->CreateBuffer((u8*)hmas_buffer, 4 * num_audio_samples * sizeof(float));
+ 
+-        GameEngine::Instance->gHMAS->CreateBuffer((u8*)hmas_buffer, 4 * num_audio_samples * sizeof(float));
++            float master_vol = CVarGetFloat("gGameMasterVolume", 1.0f);
+ 
+-        float master_vol = CVarGetFloat("gGameMasterVolume", 1.0f);
++            for (size_t i = 0; i < SAMPLES_PER_FRAME; i++) {
++                mix_buffer[i] = nas_buffer[i] + ((int16_t)(hmas_buffer[i] * 32767.0f) * master_vol);
++            }
+ 
+-        for (size_t i = 0; i < SAMPLES_PER_FRAME; i++) {
+-            mix_buffer[i] = nas_buffer[i] + ((int16_t)(hmas_buffer[i] * 32767.0f) * master_vol);
++            AudioPlayerPlayFrame((u8*) mix_buffer, 2 * num_audio_samples * 4);
+         }
+ 
+-        AudioPlayerPlayFrame((u8*) mix_buffer, 2 * num_audio_samples * 4);
+-
+         audio.processing = false;
+         audio.cv_from_thread.notify_one();
+     }
+diff --git a/src/port/Game.cpp b/src/port/Game.cpp
+index 19a41f631..71727acbd 100644
+--- a/src/port/Game.cpp
++++ b/src/port/Game.cpp
+@@ -7,6 +7,9 @@
+ #include <fast/Fast3dWindow.h>
+ #include <memory>
+ #include <atomic>
++#include <chrono>
++#include <cstdlib>
++#include <cstring>
+ #include "engine/World.h"
+ #include "engine/AllTracks.h"
+ 
+@@ -983,12 +986,58 @@ static void ApplyPendingReset() {
+     gFadeModeSelection = FADE_MODE_LOGO;
+ }
+ 
++extern "C" int GameEngine_GetAudioBufferedBeforeUpdate();
++
++// With SPAGHETTIKART_FRAME_STATS=1, logs frame pacing every 5 s: game fps, where the frame time goes (game+render
++// vs. waiting for the audio thread) and the lowest queued audio. For tuning slow devices such as the Vero 4K+.
++static void LogFramePacing(double frameMs, double gameMs, double audioWaitMs) {
++    static const bool sEnabled = [] {
++        const char* stats = std::getenv("SPAGHETTIKART_FRAME_STATS");
++        return stats != nullptr && std::strcmp(stats, "1") == 0;
++    }();
++    if (!sEnabled) {
++        return;
++    }
++    using Clock = std::chrono::steady_clock;
++    static Clock::time_point sStart = Clock::now();
++    static int sFrames, sSlowFrames, sMinBuffered = INT32_MAX;
++    static double sWorstMs, sGameMs, sAudioWaitMs;
++
++    sFrames++;
++    sSlowFrames += frameMs > 1000.0 / 30;
++    sWorstMs = std::max(sWorstMs, frameMs);
++    sGameMs += gameMs;
++    sAudioWaitMs += audioWaitMs;
++    sMinBuffered = std::min(sMinBuffered, GameEngine_GetAudioBufferedBeforeUpdate());
++
++    const double elapsed = std::chrono::duration<double>(Clock::now() - sStart).count();
++    if (elapsed >= 5.0) {
++        SPDLOG_INFO("Frame pacing: {:.1f} fps, {} frames over 33 ms, worst {:.1f} ms, avg game+render {:.1f} ms, "
++                    "avg audio wait {:.1f} ms, min audio queued before update {} samples",
++                    sFrames / elapsed, sSlowFrames, sWorstMs, sGameMs / sFrames, sAudioWaitMs / sFrames,
++                    sMinBuffered);
++        sStart = Clock::now();
++        sFrames = sSlowFrames = 0;
++        sWorstMs = sGameMs = sAudioWaitMs = 0;
++        sMinBuffered = INT32_MAX;
++    }
++}
++
+ void push_frame() {
++    using Clock = std::chrono::steady_clock;
++    static Clock::time_point sLastFrame = Clock::now();
+     ApplyPendingReset();
+     GameEngine::StartAudioFrame();
++    const Clock::time_point gameStart = Clock::now();
+     GameEngine::Instance->StartFrame();
+     thread5_iteration();
++    const Clock::time_point gameEnd = Clock::now();
+     GameEngine::EndAudioFrame();
++    const Clock::time_point frameEnd = Clock::now();
++    LogFramePacing(std::chrono::duration<double, std::milli>(frameEnd - sLastFrame).count(),
++                   std::chrono::duration<double, std::milli>(gameEnd - gameStart).count(),
++                   std::chrono::duration<double, std::milli>(frameEnd - gameEnd).count());
++    sLastFrame = frameEnd;
+     // thread5_game_loop();
+     // Graphics_ThreadUpdate();w
+ }
+-- 
+2.53.0
+
