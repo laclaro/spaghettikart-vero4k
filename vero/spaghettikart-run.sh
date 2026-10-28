@@ -28,6 +28,10 @@ DISPLAY_MODE="${DISPLAY_MODE:-1080p60hz}"
 AUDIO_SAMPLES="${AUDIO_SAMPLES:-1024}"
 # FRAME_STATS=1 logs fps and audio queue levels every 5 s to "logs/Spaghetti Kart.log" (for tuning).
 FRAME_STATS="${FRAME_STATS:-0}"
+# USB gamepads (vendor:product) the kernel's xpad driver should take on. The Vero's 4.9 kernel does not know
+# the 8BitDo Ultimate 2C dongle; without xpad only its keyboard/mouse interface works (enough for Kodi, not for
+# the game).
+XPAD_IDS="${XPAD_IDS:-2dc8:310a}"
 
 install -d -o "$GAME_USER" -g "$(id -gn "$GAME_USER")" "$DIR/logs"
 exec >"$DIR/logs/launcher.log" 2>&1
@@ -60,6 +64,13 @@ cd "$DIR" || exit 1
 # the device is fixed; always start with SDL audio.
 [ -f spaghettify.cfg.json ] && runuser -u "$GAME_USER" -- sed -i 's/"AudioBackend": "null"/"AudioBackend": "sdl"/' spaghettify.cfg.json
 echo "audio device: $AUDIODEV, buffer $AUDIO_SAMPLES samples; pulseaudio: $(pgrep -a pulseaudio || echo 'not running')"
+# Teach xpad the IDs (lasts until reboot; an ID it already has is refused, which is fine). Dongles connected
+# now are probed at once, later ones when they appear.
+if modprobe xpad; then
+    for id in $XPAD_IDS; do
+        echo "${id%:*} ${id#*:}" >/sys/bus/usb/drivers/xpad/new_id 2>/dev/null && echo "xpad: added $id"
+    done
+fi
 # Controllers are read from /dev/input/event*, which only the "input" group may open; Kodi gets access through
 # its login session, the game does not have one. Run with the user's groups plus "input" (runuser -G
 # replaces the group list, and without -g the first -G group would become the primary group).

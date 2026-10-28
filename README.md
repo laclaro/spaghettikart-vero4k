@@ -3,7 +3,8 @@
 Cross-build and Kodi launcher for [SpaghettiKart](https://github.com/HarbourMasters/SpaghettiKart) on a
 Vero 4K+ running OSMC:
 
-- Amlogic S905D, arm64 kernel with a 32-bit **armhf** userspace (Debian bullseye: glibc 2.31, libstdc++ 10.2.1)
+- Amlogic S905D, arm64 kernel (`4.9.269-62-osmc`) with a 32-bit **armhf** userspace (Debian bullseye: glibc 2.31,
+  libstdc++ 10.2.1)
 - **Mali-450** GPU: OpenGL ES 2.0 / GLSL ES 1.00 only, driver in `/opt/vero3/lib`
 - SDL 2.0.20+1mali (mali-fbdev video, no message boxes)
 
@@ -17,7 +18,7 @@ the Vero's slow GPU.
 | `Dockerfile`, `docker/`, `toolchain/vero-armhf.cmake` | Build image: bullseye cross compiler (gcc 10.2.1) with the Vero's own libraries as sysroot |
 | `build.sh` | Applies `patches/`, configures and builds in the image, collects everything in `output/` |
 | `patches/` | The Vero changes as patch series, generated from the `vero4k` branches |
-| `vero/` | Files installed next to the game on the Vero: launcher, ALSA config, controller mappings |
+| `vero/` | Files installed next to the game on the Vero: launcher, ALSA config, controller mappings, Kodi add-on |
 | `tools/shadercheck/` | Validates the GLES2 shader templates with glslang |
 | `source/SpaghettiKart` | Upstream checkout (not tracked here), with `vero4k` branches in it and in `libultraship` |
 
@@ -69,9 +70,23 @@ only needed for the sysroot.
 
 ## Starting from Kodi
 
-Point a Kodi launcher add-on or favourite (`System.Exec`) at `~/spaghettikart/spaghettikart-launch.sh`, or run
-it over SSH as `osmc`, without sudo. It needs passwordless `sudo` for `systemd-run`, which OSMC's `osmc` user
-has.
+The add-on in `vero/kodi/script.launch.spaghettikart` (copied to `output/kodi/`) puts SpaghettiKart into Kodi's
+**Games** and **Programs** menus. Install it once:
+
+```sh
+rsync -av output/kodi/script.launch.spaghettikart osmc@<vero>:.kodi/addons/
+ssh osmc@<vero> 'sudo systemctl restart mediacenter'
+```
+
+Kodi 21 registers add-ons copied in by hand but keeps them disabled, and disabled add-ons do not appear in the
+menus: enable it under *Add-ons → My add-ons → Disabled add-ons → SpaghettiKart → Enable*. Alternatively install
+`output/kodi/script.launch.spaghettikart.zip` with *Settings → Add-ons → Install from zip file* (needs *Settings → System →
+Add-ons → Unknown sources*); Kodi then enables it itself. Its icon (`icon.png`, 512×512) is the top of
+`banner.jpg`, which serves as the poster.
+
+Alternatively point a Kodi favourite (`System.Exec`) or a launcher add-on at
+`~/spaghettikart/spaghettikart-launch.sh`, or run it over SSH as `osmc`, without sudo. It needs passwordless
+`sudo` for `systemd-run`, which OSMC's `osmc` user has.
 
 - `spaghettikart-launch.sh` starts a transient systemd unit and returns. Anything Kodi starts would be killed
   together with Kodi; the unit's `ExecStopPost` restarts Kodi even if the game crashes.
@@ -83,8 +98,41 @@ has.
   goes through PulseAudio, which the unit cannot reach.
 - `gamecontrollerdb.txt` is the [SDL controller database](https://github.com/mdqinc/SDL_GameControllerDB):
   SDL 2.0.20 predates controllers such as the 8BitDo Ultimate 2C.
+- Tested controllers: two 8BitDo Ultimate 2C Wireless on their 2.4 GHz dongles (USB `2dc8:310a`). The Vero's
+  kernel `4.9.269-62-osmc` has the `xpad` module (Xbox 360 protocol) but does not know this dongle, so only its
+  keyboard/mouse interface works out of the box: enough for Kodi, not for the game. The launcher therefore loads
+  `xpad` and adds the IDs in `XPAD_IDS` to it, the same as
+  ```sh
+  sudo modprobe xpad
+  echo 2dc8 310a | sudo tee /sys/bus/usb/drivers/xpad/new_id
+  ```
+  This lasts until reboot. The dongle then has two input devices: interface 0 is the gamepad, named
+  "Generic X-Box pad" (handlers `js0`, `eventN`); interface 1, named "8BitDo 8BitDo Ultimate 2C Wireless
+  Controller", is the keyboard/mouse device. Check with `grep -B1 -A5 -iE "x-box|8bitdo" /proc/bus/input/devices`.
+  Without a connected controller the dongle reports itself as `8BitDo IDLE` (USB `2dc8:301c`) and creates no
+  gamepad.
+- The game reads the gamepad from `/dev/input/event*`, which needs the `input` group (added by the launcher).
+- To have the gamepad available system-wide from boot (e.g. for other emulators), install on the Vero a udev rule
+  such as `/etc/udev/rules.d/99-8bitdo-xpad.rules`:
+  ```
+  ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2dc8", ATTR{idProduct}=="310a", \
+      RUN+="/bin/sh -c 'modprobe xpad; echo 2dc8 310a > /sys/bus/usb/drivers/xpad/new_id'"
+  ```
 
 Logs: `~/spaghettikart/logs/launcher.log` and `~/spaghettikart/logs/Spaghetti Kart.log`.
+
+### Quitting the game
+
+SpaghettiKart has no quit option in its own menus; quitting goes through the port's settings menu, which the
+gamepad can only open with `gControlNav` set to `1` (see [Game settings](#game-settings)). Then:
+
+1. Press the gamepad's **Back/Select** button (on the 8BitDo Ultimate 2C the small left button in the middle).
+   The settings menu opens over the game.
+2. Move with the **D-pad** to the red **power button** at the top right of the menu header and press **A**.
+3. The game exits; the launcher's systemd unit restarts Kodi within a few seconds.
+
+The same button closes the menu again. With a keyboard, Esc opens and closes the menu. If the game hangs, stop it
+over SSH with `sudo systemctl stop spaghettikart`; Kodi restarts as well.
 
 ### Local settings
 
@@ -92,10 +140,11 @@ Settings in `~/spaghettikart/spaghettikart.conf` (shell syntax) survive updates 
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `AUDIODEV` | `spaghettikart` | ALSA device; `plug:dmix` shares the output with MPD and Raspotify, but glitches more |
+| `AUDIODEV` | `spaghettikart` | ALSA device; `plug:dmix` glitches more |
 | `DISPLAY_MODE` | `1080p60hz` | HDMI mode set before the game starts |
 | `AUDIO_SAMPLES` | `1024` | SDL audio device buffer; 512 underruns on the Vero |
 | `FRAME_STATS` | `0` | `1` logs fps and audio queue levels every 5 s |
+| `XPAD_IDS` | `2dc8:310a` | USB gamepads (`vendor:product`, space-separated) handed to the `xpad` driver |
 
 ## Game settings
 
@@ -108,6 +157,20 @@ set with the game closed:
 | `gTextureFilter` | `1` | Linear filtering; the N64-style 3-point filter needs several texture reads per pixel |
 | `gMSAAValue` | `1` | 4× works on the Mali (GL_EXT_multisampled_render_to_texture), but costs 1–2 fps for little visible gain |
 | `gControllers.AutoAssignPorts` | `1` | The n-th gamepad drives player n; otherwise all gamepads drive player 1 |
+| `gControlNav` | `1` | The gamepad's Back/Select button opens the game menu, operated with D-pad and A; its red power button (top right) quits the game. Without it, quitting needs a keyboard |
+
+For example, to enable quitting with the gamepad:
+
+```sh
+cd ~/spaghettikart && python3 - <<'EOF'
+import json; p='spaghettify.cfg.json'; c=json.load(open(p))
+c.setdefault('CVars',{})['gControlNav']=1
+json.dump(c,open(p,'w'),indent=4)
+EOF
+```
+
+Most of these can also be changed in the game's settings menu. The game rewrites the file when it exits, so edit it
+only while the game is not running.
 
 Races run at about 17–21 fps. Sound stays continuous anyway, because the game generates extra audio when its
 queue runs low.
