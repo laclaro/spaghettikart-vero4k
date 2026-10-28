@@ -42,6 +42,9 @@ docker run --rm --network host \
         cp "$B/Spaghettify" "$B/spaghetti.o2r" "$SRC/config.yml" "$OUT/"
         cp -r "$SRC/yamls" "$SRC/meta" "$OUT/"
         cp /work/vero/spaghettikart-launch.sh /work/vero/spaghettikart-run.sh /work/vero/spaghettikart-asound.conf /work/vero/gamecontrollerdb.txt "$OUT/"
+        rm -rf "$OUT/kodi" && cp -r /work/vero/kodi "$OUT/"
+        # Kodi installs add-ons from a zip with the add-on folder at the top (Add-ons > Install from zip file).
+        (cd /work/vero/kodi && python3 -m zipfile -c "$OUT/kodi/script.launch.spaghettikart.zip" script.launch.spaghettikart)
         # Ship a stripped binary; keep the debug info next to it for symbolising crashes.
         arm-linux-gnueabihf-objcopy --only-keep-debug "$OUT/Spaghettify" "$OUT/Spaghettify.debug"
         arm-linux-gnueabihf-strip --strip-all "$OUT/Spaghettify"
