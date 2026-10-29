@@ -21,6 +21,7 @@ the Vero's slow GPU.
 | `vero/` | Files installed next to the game on the Vero: launcher, ALSA config, controller mappings, Kodi add-on |
 | `tools/shadercheck/` | Validates the GLES2 shader templates with glslang |
 | `tools/update-patches.sh` | Regenerates `patches/` and `patches/BASE` from the `vero4k` branches |
+| `tools/make-deb.sh` | Packs `output/` as `dist/spaghettikart-vero_<version>_armhf.deb` (run by `build.sh`) |
 | `tools/make-source-archive.py` | Packs sources and mirrors of all dependencies for offline builds |
 | `source/SpaghettiKart` | Upstream checkout (not tracked here), with `vero4k` branches in it and in `libultraship` |
 
@@ -38,31 +39,57 @@ the Vero's slow GPU.
 
    Copy `vero-armhf-sysroot.tar.gz` into this folder.
 
-2. **Build image** (needs only the tarball, `docker/` and the toolchain file; see `.dockerignore`):
+2. **Build image.** The `Dockerfile` here builds the compiler environment: `debian:bullseye-slim` with the
+   armhf cross compiler (gcc 10.2.1, the same as on the Vero), CMake, and the sysroot from step 1. It holds no
+   game sources; `build.sh` mounts them when it runs. Build it once (it only needs the tarball, `docker/` and
+   the toolchain file; see `.dockerignore`):
 
    ```sh
    docker build --network host -t spaghettikart-vero-build .
    ```
 
-3. **Sources.** Clone SpaghettiKart with submodules into `source/SpaghettiKart`. Either check out its `vero4k`
-   branch (and `vero4k` in `libultraship`), or stay on upstream `main` and let `build.sh` apply `patches/`.
+3. **Sources.** Clone SpaghettiKart into `source/SpaghettiKart` and check out the commit the patches are made
+   for, which `patches/BASE` names. The submodules then come at the matching commits (libultraship at the
+   one in `patches/BASE` as well):
 
-4. **Build:**
+   ```sh
+   git clone https://github.com/HarbourMasters/SpaghettiKart source/SpaghettiKart
+   git -C source/SpaghettiKart checkout "$(awk '$1 == "SpaghettiKart" { print $2 }' patches/BASE)"
+   git -C source/SpaghettiKart submodule update --init --recursive libultraship torch
+   ```
+
+   `build.sh` does not check out anything itself. On a different commit, e.g. a newer upstream `main`, it
+   stops with an error; `./build.sh --force` tries to apply the patches anyway, which may fail or need
+   changes to the patches.
+
+4. **Build.** `build.sh` runs everything in the build image: it checks the sources against `patches/BASE`,
+   applies the patches, cross-compiles the game, packs its resources, and collects the result in `output/`
+   and as a Debian package in `dist/`.
 
    ```sh
    ./build.sh
    ```
 
-   `output/` then holds the stripped `Spaghettify` (debug info in `Spaghettify.debug`), `spaghetti.o2r`,
-   `config.yml`, `yamls/`, `meta/` and the files from `vero/`. `Spaghettify.deps.txt` lists the needed
-   libraries; the binary finds the Mali driver through its RUNPATH `/opt/vero3/lib`.
+   `output/` then holds:
+   - `Spaghettify`, the game (stripped; debug info in `Spaghettify.debug`). `Spaghettify.deps.txt` lists the
+     libraries it needs; it finds the Mali driver through its RUNPATH `/opt/vero3/lib`.
+   - `spaghetti.o2r`, the port's own resources: shaders, fonts and menu graphics.
+   - `config.yml`, `yamls/` and `meta/`, the extraction recipes for making `mk64.o2r` from a ROM.
+   - the launcher files from `vero/`, and the Kodi add-on in `kodi/`.
 
-The game data `mk64.o2r` is not built here. Generate it from your own ROM and copy it to the Vero.
+   `dist/spaghettikart-vero_<version>_armhf.deb` holds the same as a Debian package.
+
+The game data `mk64.o2r` is not built here. `spaghetti.o2r` cannot replace it: the game's textures, models,
+tracks and sounds all come from `mk64.o2r`, which you generate from your own ROM. Copy it to the Vero (see
+below).
 
 ## Installing on the Vero
 
+The game data `mk64.o2r` goes into `~/spaghettikart`, which also holds the settings, saves, logs and
+`spaghettikart.conf`; the launcher creates the folder on first start. Without `mk64.o2r` the launcher does not
+start the game.
+
 ```sh
-rsync -av --exclude build.log output/ osmc@<vero>:spaghettikart/
 scp mk64.o2r osmc@<vero>:spaghettikart/
 ```
 
@@ -70,10 +97,51 @@ Runtime packages on the Vero: `libsdl2-2.0-0` (the mali build), `libzip4`, `libt
 `libfmt7`, `libasound2`, `libudev1` and the OSMC Vero userland with the Mali driver. The `-dev` packages are
 only needed for the sysroot.
 
+### Debian package
+
+The package installs the program to `/opt/spaghettikart` and depends on the runtime packages, apart from the
+Mali driver, which no Debian package provides:
+
+```sh
+scp dist/spaghettikart-vero_*_armhf.deb osmc@<vero>:
+ssh osmc@<vero> 'sudo apt install ./spaghettikart-vero_*_armhf.deb'
+```
+
+Uninstall with `sudo apt remove spaghettikart-vero`; `~/spaghettikart` stays.
+
+Moving from a manual install to the package: the game prefers files in `~/spaghettikart` over the installed
+ones, so delete the program files there and keep `mk64.o2r`, `spaghettify.cfg.json`, the `.sav` files, `logs/`
+and `spaghettikart.conf`:
+
+```sh
+cd ~/spaghettikart && rm -rf Spaghettify Spaghettify.debug Spaghettify.deps.txt spaghetti.o2r config.yml \
+    yamls meta gamecontrollerdb.txt spaghettikart-*.sh spaghettikart-asound.conf kodi
+```
+
+The launcher log warns when a leftover `spaghetti.o2r` or `gamecontrollerdb.txt` is in use.
+
+### Manual install
+
+After building copy output to one directory `~/spaghettikart` on vero:
+
+```sh
+rsync -av --exclude build.log output/ osmc@<vero>:spaghettikart/
+```
+
 ## Starting from Kodi
 
-The add-on in `vero/kodi/script.launch.spaghettikart` (copied to `output/kodi/`) puts SpaghettiKart into Kodi's
-**Games** and **Programs** menus. Install it once:
+### Kodi launcher add-on
+
+The add-on `script.launch.spaghettikart` puts SpaghettiKart into Kodi's **Games** and **Programs** menus. It
+starts `/opt/spaghettikart/spaghettikart-launch.sh` if the package is installed, otherwise
+`~/spaghettikart/spaghettikart-launch.sh`.
+
+Install it from its zip with *Settings → Add-ons → Install from zip file* (needs *Settings → System → Add-ons →
+Unknown sources*); Kodi then enables it itself. The package installs the zip as
+`/opt/spaghettikart/kodi/script.launch.spaghettikart.zip`; a manual install has it in
+`~/spaghettikart/kodi/`.
+
+Alternatively copy the add-on folder into Kodi's add-ons:
 
 ```sh
 rsync -av output/kodi/script.launch.spaghettikart osmc@<vero>:.kodi/addons/
@@ -81,25 +149,43 @@ ssh osmc@<vero> 'sudo systemctl restart mediacenter'
 ```
 
 Kodi 21 registers add-ons copied in by hand but keeps them disabled, and disabled add-ons do not appear in the
-menus: enable it under *Add-ons → My add-ons → Disabled add-ons → SpaghettiKart → Enable*. Alternatively install
-`output/kodi/script.launch.spaghettikart.zip` with *Settings → Add-ons → Install from zip file* (needs *Settings → System →
-Add-ons → Unknown sources*); Kodi then enables it itself. Its icon (`icon.png`, 512×512) is the top of
-`banner.jpg`, which serves as the poster.
+menus: enable it under *Add-ons → My add-ons → Disabled add-ons → SpaghettiKart → Enable*.
 
-Alternatively point a Kodi favourite (`System.Exec`) or a launcher add-on at
-`~/spaghettikart/spaghettikart-launch.sh`, or run it over SSH as `osmc`, without sudo. It needs passwordless
-`sudo` for `systemd-run`, which OSMC's `osmc` user has.
+Its icon (`icon.png`, 512×512) is the top of `banner.jpg`, which serves as the poster. If the game cannot be
+started, the add-on shows the launcher's message as a notification.
 
-- `spaghettikart-launch.sh` starts a transient systemd unit and returns. Anything Kodi starts would be killed
-  together with Kodi; the unit's `ExecStopPost` restarts Kodi even if the game crashes.
+### Launcher script details
+
+- `spaghettikart-launch.sh` runs as the calling user (from Kodi, or over SSH as `osmc`, without sudo). It first
+  checks for `~/spaghettikart/mk64.o2r`: without it the game would offer to extract the data from a ROM, which
+  needs dialogs the Vero cannot show, and quit. Kodi then keeps running. Otherwise it starts a transient systemd
+  unit and returns: anything Kodi starts would be killed together with Kodi. The unit's `ExecStopPost` restarts
+  Kodi even if the game crashes. It needs passwordless `sudo` for `systemd-run`, which OSMC's `osmc` user has.
 - `spaghettikart-run.sh` runs in that unit as root. It stops Kodi, sets HDMI to 1080p60 (other modes stayed
   black), and runs the game as the calling user with the `input` group added, so that controllers can be
-  read without a login session.
+  read without a login session. The program files are next to the script, the data in `~/spaghettikart`.
 - Sound goes exclusively to `hdmi:CARD=AMLMESONAUDIO,DEV=0`, converted to 48 kHz by `spaghettikart-asound.conf`
   (loaded through `ALSA_CONFIG_PATH`). TVs stay silent at the game's own 26800 Hz, and ALSA's default device
   goes through PulseAudio, which the unit cannot reach.
-- `gamecontrollerdb.txt` is the [SDL controller database](https://github.com/mdqinc/SDL_GameControllerDB):
-  SDL 2.0.20 predates controllers such as the 8BitDo Ultimate 2C.
+
+Logs: `~/spaghettikart/logs/launcher.log` and `~/spaghettikart/logs/Spaghetti Kart.log`.
+
+### Local settings
+
+Settings in `~/spaghettikart/spaghettikart.conf` (shell syntax) survive updates of the scripts:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `AUDIODEV` | `spaghettikart` | ALSA device; `plug:dmix` glitches more |
+| `DISPLAY_MODE` | `1080p60hz` | HDMI mode set before the game starts |
+| `AUDIO_SAMPLES` | `1024` | SDL audio device buffer; 512 underruns on the Vero |
+| `FRAME_STATS` | `0` | `1` logs fps and audio queue levels every 5 s |
+| `XPAD_IDS` | `2dc8:310a` | USB gamepads (`vendor:product`, space-separated) handed to the `xpad` driver |
+
+## Game controls
+
+### Gamepad controllers
+
 - Tested controllers: two 8BitDo Ultimate 2C Wireless on their 2.4 GHz dongles (USB `2dc8:310a`). The Vero's
   kernel `4.9.269-62-osmc` has the `xpad` module (Xbox 360 protocol) but does not know this dongle, so only its
   keyboard/mouse interface works out of the box: enough for Kodi, not for the game. The launcher therefore loads
@@ -114,6 +200,10 @@ Alternatively point a Kodi favourite (`System.Exec`) or a launcher add-on at
   Without a connected controller the dongle reports itself as `8BitDo IDLE` (USB `2dc8:301c`) and creates no
   gamepad.
 - The game reads the gamepad from `/dev/input/event*`, which needs the `input` group (added by the launcher).
+- `gamecontrollerdb.txt` is the [SDL controller database](https://github.com/mdqinc/SDL_GameControllerDB):
+  SDL 2.0.20 predates controllers such as the 8BitDo Ultimate 2C.
+- With `gControllers.AutoAssignPorts` set to `1`, the n-th gamepad drives player n (see
+  [Game settings](#game-settings)).
 - To have the gamepad recognized from boot (in Kodi's game add-ons and other emulators too), load `xpad` at boot
   and add the ID whenever the module loads:
   ```sh
@@ -123,8 +213,8 @@ Alternatively point a Kodi favourite (`System.Exec`) or a launcher add-on at
   ```
   After a reboot, `cat /sys/bus/usb/drivers/xpad/new_id` lists `2dc8 310a` and the gamepad appears as soon as the
   controller connects. The launcher's own step then does nothing. To undo, delete the two files.
-
-Logs: `~/spaghettikart/logs/launcher.log` and `~/spaghettikart/logs/Spaghetti Kart.log`.
+  Use this step instead of adding the IDs to `XPAD_IDS` of spaghettikart if you want to use the controller also
+  in other games on vero.
 
 ### Quitting the game
 
@@ -142,21 +232,9 @@ Pressing Back/Select while Start is held does not open the menu, so the combo do
 Esc opens and closes the menu. If the game hangs, stop it over SSH with `sudo systemctl stop spaghettikart`; Kodi
 restarts as well.
 
-### Local settings
-
-Settings in `~/spaghettikart/spaghettikart.conf` (shell syntax) survive updates of the scripts:
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `AUDIODEV` | `spaghettikart` | ALSA device; `plug:dmix` glitches more |
-| `DISPLAY_MODE` | `1080p60hz` | HDMI mode set before the game starts |
-| `AUDIO_SAMPLES` | `1024` | SDL audio device buffer; 512 underruns on the Vero |
-| `FRAME_STATS` | `0` | `1` logs fps and audio queue levels every 5 s |
-| `XPAD_IDS` | `2dc8:310a` | USB gamepads (`vendor:product`, space-separated) handed to the `xpad` driver |
-
 ## Game settings
 
-The Mali-450 cannot hold 30 fps in races at 1080p. Recommended values in `spaghettify.cfg.json` (under `CVars`),
+The Mali-450 cannot hold 30 fps in races at 1080p on the Vero 4K+. Recommended values in `spaghettify.cfg.json` (under `CVars`),
 set with the game closed:
 
 | CVar | Value | Why |
@@ -168,7 +246,7 @@ set with the game closed:
 | `gControlNav` | `1` | The gamepad's Back/Select button opens the game menu, operated with D-pad and A (settings, and a power button to quit) |
 | `gQuitComboSeconds` | `1` (default) | Holding Start + Back/Select this long quits the game; `0` turns it off |
 
-For example, to open the menu with the gamepad:
+You may easily set values from the shell with python. For example, to open the menu with the gamepad:
 
 ```sh
 cd ~/spaghettikart && python3 - <<'EOF'
