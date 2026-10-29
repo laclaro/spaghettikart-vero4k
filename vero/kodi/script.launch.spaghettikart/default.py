@@ -5,7 +5,9 @@ import subprocess
 
 import xbmcgui
 
-LAUNCHER = os.path.expanduser("~/spaghettikart/spaghettikart-launch.sh")
+# The .deb package installs to /opt/spaghettikart; an installation by hand lives in ~/spaghettikart.
+CANDIDATES = ["/opt/spaghettikart/spaghettikart-launch.sh", os.path.expanduser("~/spaghettikart/spaghettikart-launch.sh")]
+LAUNCHER = next((path for path in CANDIDATES if os.access(path, os.X_OK)), CANDIDATES[-1])
 
 
 def notify(message):

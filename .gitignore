@@ -20,3 +20,6 @@
 # Source archives and the saved build image (README: Building in years to come)
 /spaghettikart-vero-src-*.tar.gz
 /spaghettikart-vero-build-image.tar.gz
+
+# Debian packages made by build.sh (tools/make-deb.sh)
+/dist/

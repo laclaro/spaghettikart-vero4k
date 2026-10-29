@@ -1,7 +1,9 @@
 #!/bin/bash
 # Runs SpaghettiKart with Kodi stopped and restarts Kodi when the game exits or crashes.
 # Started as root by spaghettikart-launch.sh; the game itself runs as GAME_USER (default: osmc).
-# Output goes to logs/launcher.log next to the game; the game's own log is "logs/Spaghetti Kart.log".
+# The program files are next to this script (~/spaghettikart, or /opt/spaghettikart from the .deb package).
+# The game data (mk64.o2r), settings, saves and logs are in DATA_DIR, by default ~GAME_USER/spaghettikart.
+# Output goes to logs/launcher.log there; the game's own log is "logs/Spaghetti Kart.log".
 set -u
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,12 +12,13 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 GAME_USER="${GAME_USER:-osmc}"
-# Optional local settings (AUDIODEV=..., DISPLAY_MODE=...), kept across updates of this script.
-if [ -f "$DIR/spaghettikart.conf" ]; then
-    # shellcheck source=/dev/null
-    . "$DIR/spaghettikart.conf"
-fi
 GAME_HOME="$(getent passwd "$GAME_USER" | cut -d: -f6)"
+DATA_DIR="${DATA_DIR:-$GAME_HOME/spaghettikart}"
+# Optional local settings (AUDIODEV=..., DISPLAY_MODE=...), kept across updates of the program.
+if [ -f "$DATA_DIR/spaghettikart.conf" ]; then
+    # shellcheck source=/dev/null
+    . "$DATA_DIR/spaghettikart.conf"
+fi
 # ALSA's "default" device on OSMC goes through PulseAudio, which the game cannot reach from this
 # service (no user session). Play to the HDMI output exclusively, converted to 48 kHz ("spaghettikart",
 # defined in spaghettikart-asound.conf); MPD and Raspotify cannot play while the game runs. To share the
@@ -33,9 +36,16 @@ FRAME_STATS="${FRAME_STATS:-0}"
 # the game).
 XPAD_IDS="${XPAD_IDS:-2dc8:310a}"
 
-install -d -o "$GAME_USER" -g "$(id -gn "$GAME_USER")" "$DIR/logs"
-exec >"$DIR/logs/launcher.log" 2>&1
-echo "=== $(date '+%F %T') launching SpaghettiKart as $GAME_USER"
+install -d -o "$GAME_USER" -g "$(id -gn "$GAME_USER")" "$DATA_DIR" "$DATA_DIR/logs"
+exec >"$DATA_DIR/logs/launcher.log" 2>&1
+echo "=== $(date '+%F %T') launching SpaghettiKart from $DIR as $GAME_USER, data in $DATA_DIR"
+# The game prefers files in its data folder over those next to the binary: copies left over from an
+# installation by hand would shadow the installed ones.
+if [ "$DATA_DIR" != "$DIR" ]; then
+    for f in spaghetti.o2r gamecontrollerdb.txt; do
+        [ -e "$DATA_DIR/$f" ] && echo "warning: $DATA_DIR/$f is used instead of $DIR/$f; delete it to use the installed one"
+    done
+fi
 
 restart_kodi() {
     echo "=== $(date '+%F %T') starting mediacenter"
@@ -59,7 +69,7 @@ else
     echo "display mode: $mode"
 fi
 
-cd "$DIR" || exit 1
+cd "$DATA_DIR" || exit 1
 # If the audio device cannot be opened once, the game saves the silent "null" backend and stays silent after
 # the device is fixed; always start with SDL audio.
 [ -f spaghettify.cfg.json ] && runuser -u "$GAME_USER" -- sed -i 's/"AudioBackend": "null"/"AudioBackend": "sdl"/' spaghettify.cfg.json
@@ -79,15 +89,16 @@ for g in $(id -Gn "$GAME_USER") input; do
     getent group "$g" >/dev/null && supp_groups+=(-G "$g")
 done
 echo "groups: ${supp_groups[*]}; controllers: $(grep -h '^N: Name=' /proc/bus/input/devices | cut -d'"' -f2 | paste -sd, -)"
-# SHIP_HOME keeps config, saves, mods/ and logs/ in the game folder regardless of the working directory.
+# SHIP_HOME keeps config, saves, mods/ and logs/ in the data folder regardless of the working directory; the
+# game finds spaghetti.o2r and gamecontrollerdb.txt next to its binary.
 runuser -u "$GAME_USER" -g "$(id -gn "$GAME_USER")" "${supp_groups[@]}" -- env \
     HOME="$GAME_HOME" \
-    SHIP_HOME="$DIR" \
+    SHIP_HOME="$DATA_DIR" \
     SDL_VIDEODRIVER=mali \
     SDL_AUDIODRIVER=alsa \
     AUDIODEV="$AUDIODEV" \
     SPAGHETTIKART_AUDIO_SAMPLES="$AUDIO_SAMPLES" \
     SPAGHETTIKART_FRAME_STATS="$FRAME_STATS" \
     ALSA_CONFIG_PATH="$DIR/spaghettikart-asound.conf" \
-    ./Spaghettify
+    "$DIR/Spaghettify"
 echo "=== $(date '+%F %T') game exited with status $?"

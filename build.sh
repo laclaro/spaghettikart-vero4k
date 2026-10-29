@@ -97,4 +97,6 @@ docker run --rm --network "$NETWORK" \
         arm-linux-gnueabihf-strip --strip-all "$OUT/Spaghettify"
         arm-linux-gnueabihf-objcopy --add-gnu-debuglink="$OUT/Spaghettify.debug" "$OUT/Spaghettify"
         arm-linux-gnueabihf-readelf -d "$OUT/Spaghettify" | grep -E "NEEDED|RPATH|RUNPATH" > "$OUT/Spaghettify.deps.txt"
+        # The same as a Debian package (installs to /opt/spaghettikart).
+        /work/tools/make-deb.sh "$OUT" /work/dist
     '
