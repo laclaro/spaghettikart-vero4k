@@ -23,3 +23,6 @@
 
 # Debian packages made by build.sh (tools/make-deb.sh)
 /dist/
+
+# Local files that are not published (e.g. artwork owned by others)
+/local/

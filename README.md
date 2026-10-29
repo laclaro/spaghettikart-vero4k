@@ -151,7 +151,7 @@ ssh osmc@<vero> 'sudo systemctl restart mediacenter'
 Kodi 21 registers add-ons copied in by hand but keeps them disabled, and disabled add-ons do not appear in the
 menus: enable it under *Add-ons → My add-ons → Disabled add-ons → SpaghettiKart → Enable*.
 
-Its icon (`icon.png`, 512×512) is the top of `banner.jpg`, which serves as the poster. If the game cannot be
+Its icon (`icon.png`, 256×256) is SpaghettiKart's own, from the upstream repository. If the game cannot be
 started, the add-on shows the launcher's message as a notification.
 
 ### Launcher script details
