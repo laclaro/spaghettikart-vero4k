@@ -1,0 +1,117 @@
+From 8600ac334139dca97455785038e37db92e3fbaa3 Mon Sep 17 00:00:00 2001
+From: Henning Hollermann <laclaro@mail.com>
+Date: Thu, 29 Oct 2026 21:02:35 +0100
+Subject: [PATCH 4/4] Quit with Start + Back held on a gamepad; no menu key
+ repeat
+
+The Vero 4K+ is driven from the couch: holding Start + Back/Select on any
+gamepad for gQuitComboSeconds (default 1 s, 0 turns it off) closes the
+window, so the launcher can restart Kodi.
+
+The menu toggle (Back/Select, Esc, F1) no longer uses key repeat, which
+made a held button open and close the menu over and over, and Back/Select
+does not toggle the menu while Start is held.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/port/Game.cpp         | 44 +++++++++++++++++++++++++++++++++++++++
+ src/port/SpaghettiGui.cpp | 13 ++++++++----
+ 2 files changed, 53 insertions(+), 4 deletions(-)
+
+diff --git a/src/port/Game.cpp b/src/port/Game.cpp
+index 71727acbd..57b5b4686 100644
+--- a/src/port/Game.cpp
++++ b/src/port/Game.cpp
+@@ -8,6 +8,9 @@
+ #include <memory>
+ #include <atomic>
+ #include <chrono>
++#include <SDL2/SDL.h>
++#include "ship/controller/controldeck/ControlDeck.h"
++#include "ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h"
+ #include <cstdlib>
+ #include <cstring>
+ #include "engine/World.h"
+@@ -1023,6 +1026,46 @@ static void LogFramePacing(double frameMs, double gameMs, double audioWaitMs) {
+     }
+ }
+ 
++// Holding Start + Back/Select on any gamepad for gQuitComboSeconds (default 1, 0 = off) quits the game, as the
++// power button in the menu does. TV setups such as the Vero 4K+ have no keyboard, and the game has no quit option.
++static void CheckQuitCombo() {
++    using Clock = std::chrono::steady_clock;
++    static bool sHeld = false;
++    static Clock::time_point sHeldSince;
++
++    const float holdSeconds = CVarGetFloat("gQuitComboSeconds", 1.0f);
++    if (holdSeconds <= 0.0f) {
++        return;
++    }
++
++    const std::string* heldOn = nullptr;
++    auto deviceManager = Ship::Context::GetRawInstance()->GetControlDeck()->GetConnectedPhysicalDeviceManager();
++    const auto gamepads = deviceManager->GetConnectedSDLGamepadNames();
++    for (const auto& [instanceId, name] : gamepads) {
++        SDL_GameController* gamepad = SDL_GameControllerFromInstanceID(instanceId);
++        if (gamepad != nullptr && SDL_GameControllerGetButton(gamepad, SDL_CONTROLLER_BUTTON_START) &&
++            SDL_GameControllerGetButton(gamepad, SDL_CONTROLLER_BUTTON_BACK)) {
++            heldOn = &name;
++            break;
++        }
++    }
++
++    if (heldOn == nullptr) {
++        sHeld = false;
++        return;
++    }
++    if (!sHeld) {
++        sHeld = true;
++        sHeldSince = Clock::now();
++        return;
++    }
++    if (std::chrono::duration<float>(Clock::now() - sHeldSince).count() >= holdSeconds) {
++        SPDLOG_INFO("Quit combo (Start + Back) held on \"{}\", quitting", *heldOn);
++        sHeld = false;
++        Ship::Context::GetRawInstance()->GetWindow()->Close();
++    }
++}
++
+ void push_frame() {
+     using Clock = std::chrono::steady_clock;
+     static Clock::time_point sLastFrame = Clock::now();
+@@ -1129,6 +1172,7 @@ extern "C"
+     gEditor.Load();
+     while (WindowIsRunning()) {
+         push_frame();
++        CheckQuitCombo();
+     }
+     CustomEngineDestroy();
+     // GameEngine::Instance->ProcessFrame(push_frame);
+diff --git a/src/port/SpaghettiGui.cpp b/src/port/SpaghettiGui.cpp
+index 17bfb2ec2..a5d94fa6c 100644
+--- a/src/port/SpaghettiGui.cpp
++++ b/src/port/SpaghettiGui.cpp
+@@ -104,11 +104,16 @@ void SpaghettiGui::DrawMenu() {
+ 
+     ImGui::DockSpace(dockId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None | ImGuiDockNodeFlags_NoDockingInCentralNode);
+ 
+-    if (ImGui::IsKeyPressed(TOGGLE_BTN) || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+-        (ImGui::IsKeyPressed(TOGGLE_PAD_BTN) && CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0))) {
+-        if ((ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(TOGGLE_PAD_BTN)) && GetMenu()) {
++    // No key repeat: a held key would toggle the menu over and over. Back with Start held is the quit combo
++    // (see CheckQuitCombo in Game.cpp), not a request for the menu.
++    const bool togglePressed = ImGui::IsKeyPressed(TOGGLE_BTN, false);
++    const bool escapePressed = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
++    const bool padPressed = ImGui::IsKeyPressed(TOGGLE_PAD_BTN, false) &&
++                            !ImGui::IsKeyDown(ImGuiKey_GamepadStart) && CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0);
++    if (togglePressed || escapePressed || padPressed) {
++        if ((escapePressed || padPressed) && GetMenu()) {
+             GetMenu()->ToggleVisibility();
+-        } else if ((ImGui::IsKeyPressed(TOGGLE_BTN) || ImGui::IsKeyPressed(TOGGLE_PAD_BTN)) && GetMenuBar()) {
++        } else if ((togglePressed || padPressed) && GetMenuBar()) {
+             Gui::GetMenuBar()->ToggleVisibility();
+         }
+         if (wnd->IsFullscreen()) {
+-- 
+2.53.0
+

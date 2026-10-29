@@ -17,9 +17,10 @@ the Vero's slow GPU.
 | --- | --- |
 | `Dockerfile`, `docker/`, `toolchain/vero-armhf.cmake` | Build image: bullseye cross compiler (gcc 10.2.1) with the Vero's own libraries as sysroot |
 | `build.sh` | Applies `patches/`, configures and builds in the image, collects everything in `output/` |
-| `patches/` | The Vero changes as patch series, generated from the `vero4k` branches |
+| `patches/` | The Vero changes as patch series, generated from the `vero4k` branches; `BASE` names the upstream commits they apply to |
 | `vero/` | Files installed next to the game on the Vero: launcher, ALSA config, controller mappings, Kodi add-on |
 | `tools/shadercheck/` | Validates the GLES2 shader templates with glslang |
+| `tools/update-patches.sh` | Regenerates `patches/` and `patches/BASE` from the `vero4k` branches |
 | `source/SpaghettiKart` | Upstream checkout (not tracked here), with `vero4k` branches in it and in `libultraship` |
 
 ## Building
@@ -112,27 +113,33 @@ Alternatively point a Kodi favourite (`System.Exec`) or a launcher add-on at
   Without a connected controller the dongle reports itself as `8BitDo IDLE` (USB `2dc8:301c`) and creates no
   gamepad.
 - The game reads the gamepad from `/dev/input/event*`, which needs the `input` group (added by the launcher).
-- To have the gamepad available system-wide from boot (e.g. for other emulators), install on the Vero a udev rule
-  such as `/etc/udev/rules.d/99-8bitdo-xpad.rules`:
+- To have the gamepad recognized from boot (in Kodi's game add-ons and other emulators too), load `xpad` at boot
+  and add the ID whenever the module loads:
+  ```sh
+  echo xpad | sudo tee /etc/modules-load.d/xpad.conf
+  echo 'install xpad /sbin/modprobe --ignore-install xpad $CMDLINE_OPTS && echo 2dc8 310a > /sys/bus/usb/drivers/xpad/new_id' \
+      | sudo tee /etc/modprobe.d/xpad-8bitdo.conf
   ```
-  ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2dc8", ATTR{idProduct}=="310a", \
-      RUN+="/bin/sh -c 'modprobe xpad; echo 2dc8 310a > /sys/bus/usb/drivers/xpad/new_id'"
-  ```
+  After a reboot, `cat /sys/bus/usb/drivers/xpad/new_id` lists `2dc8 310a` and the gamepad appears as soon as the
+  controller connects. The launcher's own step then does nothing. To undo, delete the two files.
 
 Logs: `~/spaghettikart/logs/launcher.log` and `~/spaghettikart/logs/Spaghetti Kart.log`.
 
 ### Quitting the game
 
-SpaghettiKart has no quit option in its own menus; quitting goes through the port's settings menu, which the
-gamepad can only open with `gControlNav` set to `1` (see [Game settings](#game-settings)). Then:
+Hold **Start + Back/Select** on any gamepad for one second (on the 8BitDo Ultimate 2C, Back/Select is the small
+left button in the middle). The game exits, and the launcher's systemd unit restarts Kodi within a few seconds.
+`gQuitComboSeconds` sets the hold time; `0` turns the combo off.
 
-1. Press the gamepad's **Back/Select** button (on the 8BitDo Ultimate 2C the small left button in the middle).
-   The settings menu opens over the game.
+The game itself has no quit option. The other way out is the port's settings menu, which the gamepad can only open
+with `gControlNav` set to `1` (see [Game settings](#game-settings)):
+
+1. Press **Back/Select**. The settings menu opens over the game; the same button closes it.
 2. Move with the **D-pad** to the red **power button** at the top right of the menu header and press **A**.
-3. The game exits; the launcher's systemd unit restarts Kodi within a few seconds.
 
-The same button closes the menu again. With a keyboard, Esc opens and closes the menu. If the game hangs, stop it
-over SSH with `sudo systemctl stop spaghettikart`; Kodi restarts as well.
+Pressing Back/Select while Start is held does not open the menu, so the combo does not flash it. With a keyboard,
+Esc opens and closes the menu. If the game hangs, stop it over SSH with `sudo systemctl stop spaghettikart`; Kodi
+restarts as well.
 
 ### Local settings
 
@@ -157,9 +164,10 @@ set with the game closed:
 | `gTextureFilter` | `1` | Linear filtering; the N64-style 3-point filter needs several texture reads per pixel |
 | `gMSAAValue` | `1` | 4× works on the Mali (GL_EXT_multisampled_render_to_texture), but costs 1–2 fps for little visible gain |
 | `gControllers.AutoAssignPorts` | `1` | The n-th gamepad drives player n; otherwise all gamepads drive player 1 |
-| `gControlNav` | `1` | The gamepad's Back/Select button opens the game menu, operated with D-pad and A; its red power button (top right) quits the game. Without it, quitting needs a keyboard |
+| `gControlNav` | `1` | The gamepad's Back/Select button opens the game menu, operated with D-pad and A (settings, and a power button to quit) |
+| `gQuitComboSeconds` | `1` (default) | Holding Start + Back/Select this long quits the game; `0` turns it off |
 
-For example, to enable quitting with the gamepad:
+For example, to open the menu with the gamepad:
 
 ```sh
 cd ~/spaghettikart && python3 - <<'EOF'
@@ -190,16 +198,25 @@ queue runs low.
 - Extra audio updates when the game runs below 30 fps; `SPAGHETTIKART_AUDIO_SAMPLES` and
   `SPAGHETTIKART_FRAME_STATS` environment variables
 
-To regenerate `patches/` after changing the `vero4k` branches:
+`patches/BASE` names the upstream commits the series apply to (SpaghettiKart, and the libultraship commit it
+pins). `build.sh` checks the checkout first: at exactly those commits it applies the patches, a branch containing
+them (such as `vero4k`) is built as it is, anything else stops with an error. `./build.sh --force` tries to apply
+the patches anyway, e.g. on a newer upstream. To build from scratch:
 
 ```sh
-git -C source/SpaghettiKart format-patch -o "$PWD/patches/SpaghettiKart" origin/main..vero4k -- . ':(exclude)libultraship'
-git -C source/SpaghettiKart/libultraship format-patch -o "$PWD/patches/libultraship" <upstream-commit>..vero4k
+git clone --recurse-submodules https://github.com/HarbourMasters/SpaghettiKart source/SpaghettiKart
+git -C source/SpaghettiKart checkout <SpaghettiKart commit from patches/BASE>
+git -C source/SpaghettiKart submodule update --init --recursive
+./build.sh
 ```
 
-Remove the old patch files first. The libultraship series starts at the submodule commit pinned by upstream
-`main` (currently `60c9bb71`). When applying the series with `git am`, use `--keep-cr`: the shader templates
-have CRLF line endings.
+After changing the `vero4k` branches, regenerate `patches/` and `patches/BASE`:
+
+```sh
+tools/update-patches.sh
+```
+
+When applying the series by hand with `git am`, use `--keep-cr`: the shader templates have CRLF line endings.
 
 ## Checking the shaders
 

@@ -1,0 +1,3 @@
+# Upstream commits the patch series apply to (written by tools/update-patches.sh, checked by build.sh).
+SpaghettiKart 5073d2e3636cdb2794f4c845ee3bdec5ac4718c4 https://github.com/HarbourMasters/SpaghettiKart
+libultraship 60c9bb713ed0850da66559fc17c556d03da649cd https://github.com/Kenix3/libultraship

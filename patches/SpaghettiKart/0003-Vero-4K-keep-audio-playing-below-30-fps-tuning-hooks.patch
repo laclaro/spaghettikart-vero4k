@@ -1,7 +1,7 @@
 From cf2b5cfb84cf4cd6be519a9afc070b8776dc7293 Mon Sep 17 00:00:00 2001
 From: Henning Hollermann <laclaro@mail.com>
 Date: Wed, 28 Oct 2026 22:27:56 +0100
-Subject: [PATCH 3/3] Vero 4K+: keep audio playing below 30 fps, tuning hooks
+Subject: [PATCH 3/4] Vero 4K+: keep audio playing below 30 fps, tuning hooks
 
 Audio on slow devices, found on a Vero 4K+ (Mali-450, races at 15-24 fps
 at 1080p with gInternalResolution 0.75):
