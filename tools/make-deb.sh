@@ -10,6 +10,8 @@ set -eu
 OUT="$1"
 DIST="$2"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="$ROOT/source/SpaghettiKart"
+DEPS="$ROOT/build/vero/_deps"
 NAME=spaghettikart-vero
 PREFIX=/opt/spaghettikart
 
@@ -33,6 +35,43 @@ cp -r "$OUT/yamls" "$OUT/meta" "$pkg$PREFIX/"
 mkdir "$pkg$PREFIX/kodi"
 cp "$OUT/kodi/script.launch.spaghettikart.zip" "$pkg$PREFIX/kodi/"
 gzip -9n -c "$ROOT/README.md" >"$pkg/usr/share/doc/$NAME/README.md.gz"
+
+# The game includes code from these projects (compiled in, or as headers); their licences ask for the notices to
+# accompany binary copies. The system libraries it links to (SDL, libzip, spdlog, fmt, tinyxml2) bring their own
+# copyright files in their packages. A missing licence file stops the build, so a changed dependency is noticed.
+notice() {   # notice <name> <url> <licence file> [sed range]
+    [ -f "$3" ] || { echo "make-deb.sh: licence file missing: $3" >&2; exit 1; }
+    printf '\n%s\n\n%s (%s)\n\n' "------------------------------------------------------------------------------" "$1" "$2"
+    if [ $# -ge 4 ]; then sed -n "$4" "$3"; else cat "$3"; fi
+}
+{
+    cat <<EOF
+SpaghettiKart for the Vero 4K+
+
+Built from SpaghettiKart (https://github.com/HarbourMasters/SpaghettiKart) with the
+patches and launcher from https://github.com/laclaro/spaghettikart-vero4k.
+SpaghettiKart's repository carries no licence file. The game data (mk64.o2r) is not
+part of this package.
+
+The controller mappings (gamecontrollerdb.txt) come from SDL_GameControllerDB
+(https://github.com/mdqinc/SDL_GameControllerDB), under the zlib licence.
+
+Third-party code in the game:
+EOF
+    notice libultraship https://github.com/Kenix3/libultraship "$SRC/libultraship/LICENSE"
+    notice Torch https://github.com/HarbourMasters/Torch "$SRC/torch/LICENSE"
+    notice "Dear ImGui" https://github.com/ocornut/imgui "$DEPS/imgui-src/LICENSE.txt"
+    notice yaml-cpp https://github.com/jbeder/yaml-cpp "$DEPS/yaml-cpp-src/LICENSE"
+    notice prism https://github.com/KiritoDv/prism-processor "$DEPS/prism-src/LICENSE"
+    notice thread-pool https://github.com/bshoshany/thread-pool "$DEPS/threadpool-src/LICENSE.txt"
+    notice toml++ https://github.com/marzer/tomlplusplus "$DEPS/tomlplusplus-src/LICENSE"
+    notice Monocypher https://github.com/LoupVaillant/Monocypher "$DEPS/monocypher-src/LICENCE.md"
+    notice dr_libs https://github.com/mackron/dr_libs "$DEPS/dr_libs-src/LICENSE"
+    notice tinyxml2 https://github.com/leethomason/tinyxml2 "$DEPS/tinyxml2-src/LICENSE.txt"
+    notice stb_image https://github.com/nothings/stb "$DEPS/stb/stb_image.h" '/^This software is available under/,/^ALTERNATIVE B/{/^ALTERNATIVE B/!p}'
+    notice sse2neon https://github.com/DLTcollab/sse2neon "$DEPS/sse2neon/sse2neon.h" '/freely redistributable/,/SOFTWARE\./p'
+    notice semver https://github.com/Neargye/semver "$DEPS/semver/semver.hpp" '/Licensed under the MIT/,/SOFTWARE\./p'
+} >"$pkg/usr/share/doc/$NAME/copyright"
 chmod -R u=rwX,go=rX "$pkg"
 chmod 755 "$pkg$PREFIX/Spaghettify" "$pkg$PREFIX/spaghettikart-launch.sh" "$pkg$PREFIX/spaghettikart-run.sh"
 
@@ -42,7 +81,7 @@ cat >"$pkg/DEBIAN/control" <<EOF
 Package: $NAME
 Version: $VERSION
 Architecture: armhf
-Maintainer: spaghettikart-cross <noreply@localhost>
+Maintainer: Henning Hollermann <laclaro@mail.com>
 Installed-Size: $(du -sk "$pkg$PREFIX" | cut -f1)
 Depends: libc6 (>= 2.31), libstdc++6 (>= 10), libgcc-s1, libsdl2-2.0-0 (>= 2.0.20), libzip4, libtinyxml2-8,
  libspdlog1, libfmt7, libasound2, sudo, systemd, util-linux, kmod
