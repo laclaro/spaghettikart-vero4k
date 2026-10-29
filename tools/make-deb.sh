@@ -15,12 +15,16 @@ DEPS="$ROOT/build/vero/_deps"
 NAME=spaghettikart-vero
 PREFIX=/opt/spaghettikart
 
-# Version: upstream's tag and commit (as in the game's own version string), then the number of commits in this
-# folder as Debian revision, so that changes to the launcher alone also give a newer package.
-describe="$(git -C "$ROOT/source/SpaghettiKart" describe --tags)"   # e.g. 1.0.0-64-g7246554d4
-upstream="$(echo "$describe" | sed -E 's/^v//; s/-([0-9]+)-g([0-9a-f]+)$/+\1.g\2/')"
-revision="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
-VERSION="$upstream-$revision"
+# Version: this folder's release tag, with the number of commits since it for builds between releases (1.0.0,
+# 1.0.0+2.g1a2b3c4). A source archive has no git history and names its version in VERSION instead. Epoch 1:
+# builds before the first release were numbered after SpaghettiKart's version (1.0.0+64.g7246554d4-N), which
+# would otherwise sort above 1.0.0.
+if ! release="$(git -C "$ROOT" describe --tags --match '[0-9]*' 2>/dev/null)"; then
+    release="$(cat "$ROOT/VERSION" 2>/dev/null)" || { echo "make-deb.sh: no release tag and no VERSION file" >&2; exit 1; }
+fi
+release="$(echo "$release" | sed -E 's/-([0-9]+)-g([0-9a-f]+)$/+\1.g\2/')"
+VERSION="1:$release"
+GAME_VERSION="$(git -C "$SRC" describe --tags)"   # as in the game's own version string, e.g. 1.0.0-64-g7246554d4
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -91,6 +95,7 @@ Homepage: https://github.com/HarbourMasters/SpaghettiKart
 Description: SpaghettiKart (Mario Kart 64 PC port) for the Vero 4K+
  Built for OSMC on the Vero 4K+ (armhf, Mali-450, OpenGL ES 2.0), started from
  Kodi: the launcher stops Kodi while the game runs and restarts it afterwards.
+ SpaghettiKart version: $GAME_VERSION.
  .
  Installs to $PREFIX. The game data (mk64.o2r, made from your own ROM) is not
  included; copy it to ~/spaghettikart. Install the Kodi add-on from
@@ -98,6 +103,6 @@ Description: SpaghettiKart (Mario Kart 64 PC port) for the Vero 4K+
 EOF
 
 mkdir -p "$DIST"
-deb="$DIST/${NAME}_${VERSION}_armhf.deb"
+deb="$DIST/${NAME}_${release}_armhf.deb"   # file names leave out the epoch
 dpkg-deb --root-owner-group -Zxz --build "$pkg" "$deb" >/dev/null
 echo "package: $deb"

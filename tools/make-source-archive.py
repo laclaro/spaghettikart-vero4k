@@ -10,6 +10,7 @@ The archive holds:
   the original URLs to those mirrors. build.sh uses it when mirrors/ exists; `./build.sh --offline` also cuts the
   network.
 - downloads/: the single headers the build downloads (sse2neon, semver, stb_image).
+- VERSION: the release (git describe of this folder), for the package version.
 
 The list of repositories comes from a finished build in build/vero (run ./build.sh first). Everything is copied
 from local clones; no network is needed. Not included: the Vero sysroot and the game data (see README.md).
@@ -142,6 +143,12 @@ def main():
         os.makedirs(dest)
         archive = subprocess.run(["git", "archive", "HEAD"], cwd=ROOT, check=True, stdout=subprocess.PIPE).stdout
         subprocess.run(["tar", "-x", "-C", dest], input=archive, check=True)
+        # Without git history, tools/make-deb.sh takes the package version from here.
+        version = subprocess.run(["git", "describe", "--tags", "--match", "[0-9]*"], cwd=ROOT, text=True,
+                                 stdout=subprocess.PIPE)
+        if version.returncode == 0:
+            with open(os.path.join(dest, "VERSION"), "w") as f:
+                f.write(version.stdout)
 
         src = os.path.join(dest, "source", "SpaghettiKart")
         shallow_repo(SK, base["SpaghettiKart"], src, "https://github.com/HarbourMasters/SpaghettiKart",
