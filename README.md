@@ -21,6 +21,7 @@ the Vero's slow GPU.
 | `vero/` | Files installed next to the game on the Vero: launcher, ALSA config, controller mappings, Kodi add-on |
 | `tools/shadercheck/` | Validates the GLES2 shader templates with glslang |
 | `tools/update-patches.sh` | Regenerates `patches/` and `patches/BASE` from the `vero4k` branches |
+| `tools/make-source-archive.py` | Packs sources and mirrors of all dependencies for offline builds |
 | `source/SpaghettiKart` | Upstream checkout (not tracked here), with `vero4k` branches in it and in `libultraship` |
 
 ## Building
@@ -191,12 +192,17 @@ queue runs low.
 - MSAA through `GL_EXT_multisampled_render_to_texture` where available
 - Diagnostics for silent GLES2 failures (framebuffer status, GL errors, render target changes)
 - `gControllers.AutoAssignPorts`, and `libdl` linked on all platforms (glibc < 2.34)
+- `stb_image.h` is downloaded only once, and a failed download stops the build
 
 **SpaghettiKart**
 - GLES2 versions of the game's shader templates
 - Yes/No prompts answer Yes when SDL cannot show a message box (instead of exiting)
 - Extra audio updates when the game runs below 30 fps; `SPAGHETTIKART_AUDIO_SAMPLES` and
   `SPAGHETTIKART_FRAME_STATS` environment variables
+- Quitting with Start + Back/Select held (`gQuitComboSeconds`); the menu toggle no longer repeats while a button
+  is held
+- `sse2neon.h` pinned to a commit instead of `master`; it and `semver.hpp` are downloaded only once, and a failed
+  download stops the build (CMake otherwise leaves an empty file and carries on)
 
 `patches/BASE` names the upstream commits the series apply to (SpaghettiKart, and the libultraship commit it
 pins). `build.sh` checks the checkout first: at exactly those commits it applies the patches, a branch containing
@@ -223,3 +229,46 @@ When applying the series by hand with `git am`, use `--keep-cr`: the shader temp
 ```sh
 tools/shadercheck/check-shaders.sh        # after ./build.sh; expands 400 configurations per template
 ```
+
+## Building in years to come
+
+Everything the build depends on is pinned: the upstream commits in `patches/BASE` and the submodule commits they
+record, the FetchContent tags and commits in upstream's CMake files, the `debian:bullseye-slim` image by digest,
+CMake 3.27.9, and Debian bullseye from `archive.debian.org`, which does not change any more. What can still
+disappear are the repositories on GitHub and the Debian archive. Two things guard against that:
+
+**Source archive.** After a successful `./build.sh`:
+
+```sh
+tools/make-source-archive.py      # writes spaghettikart-vero-src-YYYYMMDD.tar.gz (about 70 MiB)
+```
+
+It holds this folder's committed files, SpaghettiKart, libultraship and Torch at their base commits (shallow
+git repositories; SpaghettiKart back to its last tag, for the version string), `mirrors/` with a minimal copy
+of every repository CMake clones during the build, and `downloads/` with the single headers it downloads.
+`build.sh` redirects the clones to the mirrors (`mirrors/gitconfig`) and seeds the headers. To build from it:
+
+```sh
+tar -xzf spaghettikart-vero-src-YYYYMMDD.tar.gz && cd spaghettikart-vero
+cp /path/to/vero-armhf-sysroot.tar.gz .
+docker build --network host -t spaghettikart-vero-build .     # or docker load, see below
+./build.sh --offline
+```
+
+`--offline` runs the build container without network, which proves nothing is fetched.
+
+**Build image.** `docker build` still downloads Debian packages and CMake. Keep the finished image:
+
+```sh
+docker save spaghettikart-vero-build | gzip > spaghettikart-vero-build-image.tar.gz
+docker load < spaghettikart-vero-build-image.tar.gz
+```
+
+**The Vero side.** The sysroot tarball needs a Vero with OSMC's bullseye userland. Keep a copy of
+`vero-armhf-sysroot.tar.gz` along with the image.
+
+**What may be shared.** The source archive holds only code that is public on GitHub, each part under its own
+licence, plus this folder; no game data and no Vero files. The build image and the sysroot contain the Vero's
+libraries, including OSMC's proprietary Mali driver: keep them private. `output/` holds the game binary and
+the port's own `spaghetti.o2r`, but no Mali driver and no game data. `mk64.o2r` and the ROM are never
+shared; everybody makes their own.

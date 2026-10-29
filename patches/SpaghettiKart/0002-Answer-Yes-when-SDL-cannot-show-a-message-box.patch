@@ -1,7 +1,7 @@
 From 64004f0802e089eb2f13c23ccc34973ab818a512 Mon Sep 17 00:00:00 2001
 From: Henning Hollermann <laclaro@mail.com>
 Date: Thu, 22 Oct 2026 00:34:02 +0200
-Subject: [PATCH 2/4] Answer Yes when SDL cannot show a message box
+Subject: [PATCH 2/5] Answer Yes when SDL cannot show a message box
 
 SDL video drivers without message box support (e.g. mali/fbdev on the
 Vero 4K+) make SDL_ShowMessageBox fail, after which ShowYesNoBox

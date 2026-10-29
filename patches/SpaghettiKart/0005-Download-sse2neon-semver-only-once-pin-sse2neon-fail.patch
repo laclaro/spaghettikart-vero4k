@@ -1,0 +1,70 @@
+From 7246554d4b62a0286c1524fe3d559f5cc70e2669 Mon Sep 17 00:00:00 2001
+From: Henning Hollermann <laclaro@mail.com>
+Date: Thu, 29 Oct 2026 21:23:36 +0100
+Subject: [PATCH 5/5] Download sse2neon/semver only once; pin sse2neon; fail on
+ download errors
+
+sse2neon.h was fetched from master on every configure, so rebuilds could
+get a different header; pin it to the commit current builds use
+(2272251c). Like semver.hpp, download it only when it is missing and
+stop with a clear message if the download fails: without network,
+file(DOWNLOAD) leaves an empty file behind and configuring carries on.
+
+Update libultraship: the same for stb_image.h.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cmake/dependencies/common.cmake | 33 +++++++++++++++++++++++++--------
+ 1 file changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/cmake/dependencies/common.cmake b/cmake/dependencies/common.cmake
+index 65d5741a3..cfbde939f 100644
+--- a/cmake/dependencies/common.cmake
++++ b/cmake/dependencies/common.cmake
+@@ -1,18 +1,35 @@
+ # =================== SSE2NEON ===================
++# Downloaded once: file(DOWNLOAD) leaves an empty file when offline. Pinned, so that rebuilds get the same header.
+ set(SSE2NEON_DIR ${CMAKE_BINARY_DIR}/_deps/sse2neon)
+-file(
+-  DOWNLOAD
+-  "https://raw.githubusercontent.com/DLTcollab/sse2neon/refs/heads/master/sse2neon.h"
+-  "${SSE2NEON_DIR}/sse2neon.h")
++if(NOT EXISTS "${SSE2NEON_DIR}/sse2neon.h")
++  file(
++    DOWNLOAD
++    "https://raw.githubusercontent.com/DLTcollab/sse2neon/2272251cc3ad9cba8b8c47c4065811cfb396b802/sse2neon.h"
++    "${SSE2NEON_DIR}/sse2neon.h"
++    STATUS SSE2NEON_STATUS)
++  list(GET SSE2NEON_STATUS 0 SSE2NEON_ERROR)
++  if(SSE2NEON_ERROR)
++    file(REMOVE "${SSE2NEON_DIR}/sse2neon.h")
++    message(FATAL_ERROR "Downloading sse2neon.h failed: ${SSE2NEON_STATUS}")
++  endif()
++endif()
+ 
+ target_include_directories(${PROJECT_NAME} PRIVATE ${SSE2NEON_DIR})
+ 
+ # ================== SEMVER ===================
+ set(SEMVER_DIR ${CMAKE_BINARY_DIR}/_deps/semver)
+-file(
+-  DOWNLOAD
+-  "https://raw.githubusercontent.com/Neargye/semver/refs/tags/v1.0.0-rc/include/semver.hpp"
+-  "${SEMVER_DIR}/semver.hpp")
++if(NOT EXISTS "${SEMVER_DIR}/semver.hpp")
++  file(
++    DOWNLOAD
++    "https://raw.githubusercontent.com/Neargye/semver/refs/tags/v1.0.0-rc/include/semver.hpp"
++    "${SEMVER_DIR}/semver.hpp"
++    STATUS SEMVER_STATUS)
++  list(GET SEMVER_STATUS 0 SEMVER_ERROR)
++  if(SEMVER_ERROR)
++    file(REMOVE "${SEMVER_DIR}/semver.hpp")
++    message(FATAL_ERROR "Downloading semver.hpp failed: ${SEMVER_STATUS}")
++  endif()
++endif()
+ 
+ target_include_directories(${PROJECT_NAME} PRIVATE ${SEMVER_DIR})
+ 
+-- 
+2.53.0
+

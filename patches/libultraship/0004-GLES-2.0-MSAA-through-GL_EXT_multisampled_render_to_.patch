@@ -1,7 +1,7 @@
 From 6dbdbae047552a35e31fc26c10e2c7028c83dd2e Mon Sep 17 00:00:00 2001
 From: Henning Hollermann <laclaro@mail.com>
 Date: Wed, 28 Oct 2026 22:44:52 +0100
-Subject: [PATCH 4/4] GLES 2.0: MSAA through
+Subject: [PATCH 4/5] GLES 2.0: MSAA through
  GL_EXT_multisampled_render_to_texture
 
 GLES 2.0 has no multisampled renderbuffers, so MSAA was disabled there.

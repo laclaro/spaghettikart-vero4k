@@ -1,7 +1,7 @@
 From 72d4b3755cfafc56f138f16af21899447c6eb208 Mon Sep 17 00:00:00 2001
 From: Henning Hollermann <laclaro@mail.com>
 Date: Thu, 22 Oct 2026 00:34:02 +0200
-Subject: [PATCH 1/4] Support OpenGL ES 2.0 GPUs (Vero 4K+ / Mali-450)
+Subject: [PATCH 1/5] Support OpenGL ES 2.0 GPUs (Vero 4K+ / Mali-450)
 
 - update libultraship to the vero4k branch, which adds USE_OPENGLES2
   (GLES 2.0 / GLSL ES 1.00 renderer) and links libdl for glibc < 2.34

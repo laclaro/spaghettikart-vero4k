@@ -1,19 +1,31 @@
 #!/bin/sh
 # Build SpaghettiKart for the Vero 4k+ (armhf, Mali-450 GLES 2.0) inside the spaghettikart-vero-build image.
-# usage: ./build.sh [--force] [image]
-#   --force  apply patches/ even if the sources are not at the upstream commits in patches/BASE
+# usage: ./build.sh [--force] [--offline] [image]
+#   --force    apply patches/ even if the sources are not at the upstream commits in patches/BASE
+#   --offline  build without network; needs mirrors/ and downloads/ from a source archive
+#              (tools/make-source-archive.py)
 # Build the image first: docker build --network host -t spaghettikart-vero-build .
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FORCE=0
-if [ "${1:-}" = --force ]; then
-    FORCE=1
+NETWORK=host
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force) FORCE=1 ;;
+        --offline) NETWORK=none ;;
+        -*) echo "unknown option: $1" >&2; exit 2 ;;
+        *) break ;;
+    esac
     shift
-fi
+done
 IMAGE="${1:-spaghettikart-vero-build}"
+if [ "$NETWORK" = none ] && [ ! -f "$HERE/mirrors/gitconfig" ]; then
+    echo "--offline needs mirrors/ from a source archive (tools/make-source-archive.py)" >&2
+    exit 2
+fi
 
-docker run --rm --network host \
+docker run --rm --network "$NETWORK" \
     -u "$(id -u):$(id -g)" -e HOME=/tmp -e FORCE="$FORCE" \
     -v "$HERE:/work" \
     -w /work \
@@ -41,6 +53,16 @@ docker run --rm --network host \
                 exit 1
             fi
         done
+
+        # A source archive brings local mirrors of the repositories CMake clones, and the single files it downloads.
+        if [ -f /work/mirrors/gitconfig ]; then
+            echo "using the repository mirrors in mirrors/"
+            cp /work/mirrors/gitconfig "$HOME/.gitconfig"
+        fi
+        if [ -d /work/downloads ]; then
+            mkdir -p "$B/_deps"
+            cp -rn /work/downloads/. "$B/_deps/"
+        fi
 
         # Local fixes for the 32-bit armhf / Mali GLES2 target, applied once (idempotent).
         for repo in SpaghettiKart libultraship; do

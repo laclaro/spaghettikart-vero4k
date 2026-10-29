@@ -1,0 +1,41 @@
+From 1118872caaca89e4cc89b44d416344d86857a19e Mon Sep 17 00:00:00 2001
+From: Henning Hollermann <laclaro@mail.com>
+Date: Thu, 29 Oct 2026 21:23:36 +0100
+Subject: [PATCH 5/5] Download stb_image.h only once; fail on download errors
+
+Without network, file(DOWNLOAD) leaves an empty stb_image.h behind and
+configuring carries on, so the build fails later with a misleading
+error. Download the header only when it is missing, check the status,
+and stop with a clear message if the download fails. This also allows
+offline builds with the header provided in the build tree.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cmake/dependencies/common.cmake | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/cmake/dependencies/common.cmake b/cmake/dependencies/common.cmake
+index 80dec56e..946b4a76 100644
+--- a/cmake/dependencies/common.cmake
++++ b/cmake/dependencies/common.cmake
+@@ -52,7 +52,16 @@ endif()
+ 
+ #=================== STB ===================
+ set(STB_DIR ${CMAKE_BINARY_DIR}/_deps/stb)
+-file(DOWNLOAD "https://github.com/nothings/stb/raw/0bc88af4de5fb022db643c2d8e549a0927749354/stb_image.h" "${STB_DIR}/stb_image.h")
++# Downloaded once: file(DOWNLOAD) leaves an empty file when offline.
++if(NOT EXISTS "${STB_DIR}/stb_image.h")
++    file(DOWNLOAD "https://github.com/nothings/stb/raw/0bc88af4de5fb022db643c2d8e549a0927749354/stb_image.h"
++        "${STB_DIR}/stb_image.h" STATUS STB_STATUS)
++    list(GET STB_STATUS 0 STB_ERROR)
++    if(STB_ERROR)
++        file(REMOVE "${STB_DIR}/stb_image.h")
++        message(FATAL_ERROR "Downloading stb_image.h failed: ${STB_STATUS}")
++    endif()
++endif()
+ file(WRITE "${STB_DIR}/stb_impl.c" "#define STB_IMAGE_IMPLEMENTATION\n#include \"stb_image.h\"")
+ 
+ add_library(stb STATIC)
+-- 
+2.53.0
+

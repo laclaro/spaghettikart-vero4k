@@ -1,7 +1,7 @@
 From 3b3dc2d0a7343967c91d3d4a935b0f38b14ca9f6 Mon Sep 17 00:00:00 2001
 From: Henning Hollermann <laclaro@mail.com>
 Date: Thu, 22 Oct 2026 00:33:14 +0200
-Subject: [PATCH 2/4] Link libdl on all platforms
+Subject: [PATCH 2/5] Link libdl on all platforms
 
 dladdr() is used by CrashHandler and FileDropMgr but ${CMAKE_DL_LIBS}
 was only linked on Darwin/iOS. On glibc < 2.34 (e.g. Debian bullseye)

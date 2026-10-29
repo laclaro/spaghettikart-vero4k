@@ -1,7 +1,7 @@
 From 8600ac334139dca97455785038e37db92e3fbaa3 Mon Sep 17 00:00:00 2001
 From: Henning Hollermann <laclaro@mail.com>
 Date: Thu, 29 Oct 2026 21:02:35 +0100
-Subject: [PATCH 4/4] Quit with Start + Back held on a gamepad; no menu key
+Subject: [PATCH 4/5] Quit with Start + Back held on a gamepad; no menu key
  repeat
 
 The Vero 4K+ is driven from the couch: holding Start + Back/Select on any

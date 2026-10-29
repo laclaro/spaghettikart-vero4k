@@ -1,7 +1,7 @@
 From 6a7300cc39bac29a886b0629eddcbf1955289971 Mon Sep 17 00:00:00 2001
 From: Henning Hollermann <laclaro@mail.com>
 Date: Thu, 22 Oct 2026 00:33:09 +0200
-Subject: [PATCH 1/4] Add OpenGL ES 2.0 renderer support (USE_OPENGLES2)
+Subject: [PATCH 1/5] Add OpenGL ES 2.0 renderer support (USE_OPENGLES2)
 
 Adds a USE_OPENGLES2 option for GPUs limited to GLES 2.0 / GLSL ES 1.00,
 such as the Mali-450 in the Vero 4K+. With it enabled (on top of

@@ -1,7 +1,7 @@
 From cefd55d0cd5ba541f32c5617796597da05279963 Mon Sep 17 00:00:00 2001
 From: Henning Hollermann <laclaro@mail.com>
 Date: Wed, 28 Oct 2026 22:27:43 +0100
-Subject: [PATCH 3/4] Vero 4K+: GLES2 diagnostics, NPOT-safe framebuffers,
+Subject: [PATCH 3/5] Vero 4K+: GLES2 diagnostics, NPOT-safe framebuffers,
  per-port gamepads
 
 Follow-up to the OpenGL ES 2.0 renderer (USE_OPENGLES2), from testing on

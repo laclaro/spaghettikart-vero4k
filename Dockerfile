@@ -5,7 +5,8 @@
 # glibc 2.31, libstdc++ 10.2.1, SDL2 2.0.20+1mali and the Mali GLES/EGL blob in /opt/vero3/lib.
 # The bullseye cross compiler is GCC 10.2.1, the same version as the Vero's libstdc++6.
 
-FROM --platform=linux/amd64 debian:bullseye-slim
+# Pinned to the image the build was tested with; bullseye-slim is no longer updated anyway.
+FROM --platform=linux/amd64 debian:bullseye-slim@sha256:e5b6442dd2e9684cf5e87d8338b5968f3b348636fc0be6d7850a381e3731a2bd
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/opt/venv/bin:${PATH}"

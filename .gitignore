@@ -16,3 +16,7 @@
 *.n64
 *.v64
 /MarioKart64.zip
+
+# Source archives and the saved build image (README: Building in years to come)
+/spaghettikart-vero-src-*.tar.gz
+/spaghettikart-vero-build-image.tar.gz
